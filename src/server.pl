@@ -39,6 +39,8 @@ user:message_hook(_, informational, _) :- !.
 :- http_handler(root(api/reload),    api_reload,    [method(post)]).
 :- http_handler(root(api/beliefs),   api_beliefs,   []).
 :- http_handler(root(api/past),      api_past,      []).
+:- http_handler(root(api/learned),   api_learned,   []).
+:- http_handler(root(api/goals),     api_goals,     []).
 :- http_handler(root(api/blackboard),api_blackboard,[]).
 :- http_handler(root(api/source),    api_source,    []).
 :- http_handler(root(api/save),      api_save,      [method(post)]).
@@ -409,6 +411,52 @@ api_past(Request) :-
         )
     ),
     reply_json_dict(_{past: Events}).
+
+%% GET /api/learned?agent=Name
+api_learned(Request) :-
+    cors_enable,
+    http_parameters(Request, [
+        agent(Agent, [optional(true), default('')])
+    ]),
+    (Agent = '' ->
+        findall(
+            _{agent: N, pattern: P, outcome: O},
+            (engine:agent_learned_rt(N, P0, O0),
+             term_to_atom(P0, P), term_to_atom(O0, O)),
+            Learned
+        )
+    ;
+        atom_string(AgentAtom, Agent),
+        findall(
+            _{agent: AgentAtom, pattern: P, outcome: O},
+            (engine:agent_learned_rt(AgentAtom, P0, O0),
+             term_to_atom(P0, P), term_to_atom(O0, O)),
+            Learned
+        )
+    ),
+    reply_json_dict(_{learned: Learned}).
+
+%% GET /api/goals?agent=Name
+api_goals(Request) :-
+    cors_enable,
+    http_parameters(Request, [
+        agent(Agent, [optional(true), default('')])
+    ]),
+    (Agent = '' ->
+        findall(
+            _{agent: N, goal: G, status: S},
+            (engine:agent_goal_status(N, G, S)),
+            Goals
+        )
+    ;
+        atom_string(AgentAtom, Agent),
+        findall(
+            _{agent: AgentAtom, goal: G, status: S},
+            (engine:agent_goal_status(AgentAtom, G, S)),
+            Goals
+        )
+    ),
+    reply_json_dict(_{goals: Goals}).
 
 %% GET /api/blackboard - View blackboard contents
 api_blackboard(_Request) :-

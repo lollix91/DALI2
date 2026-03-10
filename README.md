@@ -243,7 +243,7 @@ run.bat
 
 ## Agent Language
 
-Agents are defined in a single `.pl` file using a simple syntax:
+Agents are defined in a single `.pl` file using a simple syntax. See [RULES.md](RULES.md) for the complete language reference.
 
 ```prolog
 %% Declare an agent with options
@@ -254,12 +254,51 @@ my_agent:on(some_event(Arg1, Arg2)) :-
     log("Received: ~w, ~w", [Arg1, Arg2]),
     send(other_agent, response(Arg1)).
 
+%% Internal event (proactive, fires every cycle while condition holds)
+my_agent:internal(check_status, [between(time(9,0), time(17,0))]) :-
+    log("Checking status during work hours").
+
 %% Periodic task (runs every N seconds)
 my_agent:every(10, log("Heartbeat")).
 
-%% Condition monitor (checked every cycle)
+%% Condition monitor (checked every cycle, level-triggered)
 my_agent:when(believes(temperature(T)), T > 40) :-
     send(alert_agent, overheat(T)).
+
+%% Condition-action (edge-triggered, fires once when condition becomes true)
+my_agent:on_change(believes(battery_low)) :-
+    send(charger, request_charge).
+
+%% Present/environment event (checked every cycle against environment state)
+my_agent:on_present(bb_read(sensor(temp, T))) :-
+    log("Environment temperature: ~w", [T]).
+
+%% Multi-event (fires when ALL listed events have occurred)
+my_agent:on_all([init_done, config_loaded]) :-
+    log("System fully initialized").
+
+%% Constraint (checked every cycle, handler fires if violated)
+my_agent:constraint(believes(temperature(T)), T < 100) :-
+    log("CRITICAL: Temperature constraint violated!"),
+    send(safety, emergency_shutdown).
+
+%% Tell/told communication filtering
+my_agent:told(alarm(_)).              %% Accept alarm messages
+my_agent:told(status(_), 100).        %% Accept status with priority 100
+my_agent:tell(report(_)).             %% Only allowed to send report messages
+
+%% Ontology declarations
+my_agent:ontology(same_as(hot, warm)).
+my_agent:ontology(eq_property(temperature, temp)).
+my_agent:ontology(symmetric(near)).
+
+%% Learning rule (triggered when matching event occurs)
+my_agent:learn_from(sensor_reading(T), high_temp) :-
+    T > 40.
+
+%% Goal (achieve = keep trying, test = try once)
+my_agent:goal(achieve, believes(calibrated)) :-
+    send(calibrator, calibrate_request).
 
 %% Action definition
 my_agent:do(process(X)) :-
@@ -270,20 +309,51 @@ my_agent:do(process(X)) :-
 my_agent:believes(status(idle)).
 ```
 
+### Rule Types Summary
+
+| Rule | Syntax | Description |
+|------|--------|-------------|
+| **Reactive** | `agent:on(Event) :- Body.` | React to external events/messages |
+| **Internal** | `agent:internal(Event, Options) :- Body.` | Proactive events with conditions |
+| **Periodic** | `agent:every(Seconds, Goal).` | Runs at fixed intervals |
+| **Monitor** | `agent:when(Condition) :- Body.` | Level-triggered condition check |
+| **On-change** | `agent:on_change(Condition) :- Body.` | Edge-triggered (fires once) |
+| **Present** | `agent:on_present(Condition) :- Body.` | Environment observation |
+| **Multi-event** | `agent:on_all([E1, E2, ...]) :- Body.` | Fires when all events occurred |
+| **Constraint** | `agent:constraint(Condition) :- Body.` | Invariant checking |
+| **Goal** | `agent:goal(achieve/test, Goal) :- Plan.` | Goal-directed behavior |
+| **Told** | `agent:told(Pattern, Priority).` | Accept message filter |
+| **Tell** | `agent:tell(Pattern).` | Send message filter |
+| **Ontology** | `agent:ontology(Declaration).` | Semantic equivalences |
+| **Learning** | `agent:learn_from(Event, Outcome) :- Body.` | Learn from experience |
+| **Action** | `agent:do(Action) :- Body.` | Named actions |
+| **Belief** | `agent:believes(Fact).` | Initial beliefs |
+| **Helper** | `agent:helper(Head) :- Body.` | Utility predicates |
+
 ### DSL Predicates
 
 | Predicate | Description |
 |-----------|-------------|
-| `send(Agent, Content)` | Send a message to another agent |
+| `send(Agent, Content)` | Send a message (filtered by tell/told rules) |
 | `broadcast(Content)` | Send to all other agents |
 | `log(Format, Args)` | Log a formatted message |
 | `log(Message)` | Log a simple message |
 | `assert_belief(Fact)` | Add a belief to the agent |
 | `retract_belief(Fact)` | Remove a belief |
-| `believes(Fact)` | Check if agent has a belief |
+| `believes(Fact)` | Check if agent has a belief (ontology-aware) |
 | `has_past(Event)` | Check if event is in past memory |
+| `has_past(Event, Time)` | Check past with timestamp |
 | `do(Action)` | Execute a defined action |
-| `ask_ai(Context, Result)` | Query the AI oracle, get a Prolog fact back |
+| `learn(Pattern, Outcome)` | Record a learned association |
+| `learned(Pattern, Outcome)` | Check if something was learned |
+| `forget(Pattern)` | Remove learned associations |
+| `onto_match(Term1, Term2)` | Check ontology equivalence |
+| `achieve(Goal)` | Manually trigger an achieve goal |
+| `reset_goal(Goal)` | Reset a goal for re-attempt |
+| `bb_read(Pattern)` | Read from shared blackboard |
+| `bb_write(Tuple)` | Write to shared blackboard |
+| `bb_remove(Pattern)` | Remove from shared blackboard |
+| `ask_ai(Context, Result)` | Query the AI oracle |
 | `ask_ai(Context, Prompt, Result)` | Query AI with custom system prompt |
 | `ai_available` | Check if AI oracle is configured |
 
@@ -345,6 +415,8 @@ The web interface at `http://localhost:8080` provides:
 | POST | `/api/reload` | Reload agent file `{"file":"path"}` |
 | GET | `/api/beliefs?agent=X` | Get agent beliefs |
 | GET | `/api/past?agent=X` | Get past events |
+| GET | `/api/learned?agent=X` | Get learned patterns |
+| GET | `/api/goals?agent=X` | Get goal statuses |
 | GET | `/api/blackboard` | View blackboard tuples |
 | GET | `/api/source` | Get agent file source |
 | POST | `/api/save` | Save agent file `{"content":"..."}` |
@@ -379,11 +451,13 @@ DALI2/
 │   ├── agriculture.pl           # Smart agriculture (single node)
 │   ├── emergency.pl             # Emergency response (single node)
 │   ├── emergency_sensors.pl     # Distributed: sensor node
-│   └── emergency_responders.pl  # Distributed: responder node
+│   ├── emergency_responders.pl  # Distributed: responder node
+│   └── showcase.pl              # All features showcase
 ├── Dockerfile
 ├── docker-compose.yml               # Single instance
 ├── docker-compose.distributed.yml   # Multi-instance federation
 ├── run.bat
+├── RULES.md                         # Complete language reference
 └── README.md
 ```
 
@@ -401,6 +475,15 @@ DALI2/
 | Docker setup | Complex (SICStus install) | Simple (swipl base image) |
 | Event syntax | `eventE(X) :> body.` | `agent:on(event(X)) :- body.` |
 | Message sending | `messageA(dest, send_message(ev(X), Me))` | `send(dest, ev(X))` |
+| Internal events | `internal_event/5` with `forever`/`until_cond`/`in_date` | `agent:internal(event, [options]) :- body.` |
+| Tell/told | `told(_,inform(_),70)` in communication.con | `agent:told(pattern, priority).` |
+| Condition-action | `cond :< action.` | `agent:on_change(cond) :- body.` |
+| Present events | `en(X)` with suffix N | `agent:on_present(cond) :- body.` |
+| Multi-events | `mul/1` | `agent:on_all([e1, e2]) :- body.` |
+| Constraints | `:~ constraint.` | `agent:constraint(cond) :- body.` |
+| Ontologies | `meta/3` + OWL files | `agent:ontology(same_as(a,b)).` |
+| Learning | `learning.pl` + constraints | `agent:learn_from(event, outcome) :- body.` |
+| Goals | `obt_goal`/`test_goal` | `agent:goal(achieve/test, goal) :- plan.` |
 
 ## License
 

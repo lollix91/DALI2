@@ -4,8 +4,17 @@
 %% Each agent runs as a thread with its own event loop.
 %% The engine processes:
 %%   - External events (messages from other agents)
+%%   - Internal events (proactive, with conditions: forever/times/until/between)
 %%   - Periodic tasks (every/3)
 %%   - Condition monitors (when/3)
+%%   - Condition-action rules (edge-triggered on_change)
+%%   - Present/environment events (on_present)
+%%   - Multi-events (on_all - fire when all events occurred)
+%%   - Constraints (invariant checking)
+%%   - Goals (achieve/test)
+%%   - Tell/told communication filtering
+%%   - Ontology-aware matching
+%%   - Learning from experience
 %%   - Past event memory
 %%   - Actions
 
@@ -20,6 +29,8 @@
     agent_log/2,
     agent_past/2,
     agent_beliefs/2,
+    agent_learned/2,
+    agent_goals/2,
     all_logs/1
 ]).
 
@@ -30,13 +41,18 @@
 :- use_module(library(lists)).
 
 %% Agent runtime state (thread-local per agent, but stored globally with agent name key)
-:- dynamic agent_running/1.        % agent_running(Name)
-:- dynamic agent_thread/2.         % agent_thread(Name, ThreadId)
-:- dynamic agent_log_entry/3.      % agent_log_entry(Name, Timestamp, Message)
-:- dynamic agent_past_event/4.     % agent_past_event(Name, Event, Timestamp, Source)
-:- dynamic agent_belief_rt/2.      % agent_belief_rt(Name, Fact)
-:- dynamic agent_last_periodic/3.  % agent_last_periodic(Name, PeriodicId, LastTime)
-:- dynamic agent_event_queue/2.    % agent_event_queue(Name, Event)
+:- dynamic agent_running/1.            % agent_running(Name)
+:- dynamic agent_thread/2.             % agent_thread(Name, ThreadId)
+:- dynamic agent_log_entry/3.          % agent_log_entry(Name, Timestamp, Message)
+:- dynamic agent_past_event/4.         % agent_past_event(Name, Event, Timestamp, Source)
+:- dynamic agent_belief_rt/2.          % agent_belief_rt(Name, Fact)
+:- dynamic agent_last_periodic/3.      % agent_last_periodic(Name, PeriodicId, LastTime)
+:- dynamic agent_event_queue/2.        % agent_event_queue(Name, Event)
+:- dynamic agent_internal_count/3.     % agent_internal_count(Name, InternalId, Count)
+:- dynamic agent_condition_state/3.    % agent_condition_state(Name, CondId, true/false)
+:- dynamic agent_multi_fired/2.        % agent_multi_fired(Name, MultiId)
+:- dynamic agent_learned_rt/3.         % agent_learned_rt(Name, Pattern, Outcome)
+:- dynamic agent_goal_status/3.        % agent_goal_status(Name, GoalId, Status)
 
 %% ============================================================
 %% PUBLIC API
@@ -111,6 +127,14 @@ agent_past(Name, Events) :-
 agent_beliefs(Name, Beliefs) :-
     findall(B, agent_belief_rt(Name, B), Beliefs).
 
+%% agent_learned(+Name, -Learned) - Get learned patterns for an agent
+agent_learned(Name, Learned) :-
+    findall(learned(P, O), agent_learned_rt(Name, P, O), Learned).
+
+%% agent_goals(+Name, -Goals) - Get goal statuses for an agent
+agent_goals(Name, Goals) :-
+    findall(goal(Id, Status), agent_goal_status(Name, Id, Status), Goals).
+
 %% all_logs(-Entries) - Get all log entries across all agents
 all_logs(Entries) :-
     findall(entry(Name, T, Msg), agent_log_entry(Name, T, Msg), Entries).
@@ -133,11 +157,23 @@ agent_loop_inner(Name, Options) :-
         process_messages(Name),
         % 2. Process injected events
         process_injected_events(Name),
-        % 3. Process periodic tasks
+        % 3. Process internal events (proactive)
+        process_internals(Name),
+        % 4. Process periodic tasks
         process_periodics(Name),
-        % 4. Process condition monitors
+        % 5. Process condition monitors (level-triggered)
         process_monitors(Name),
-        % 5. Sleep for cycle duration
+        % 6. Process condition-action rules (edge-triggered)
+        process_condition_actions(Name),
+        % 7. Process present/environment events
+        process_present_events(Name),
+        % 8. Process multi-events
+        process_multi_events(Name),
+        % 9. Check constraints
+        process_constraints(Name),
+        % 10. Process goals
+        process_goals(Name),
+        % 11. Sleep for cycle duration
         get_cycle_ms(Options, SleepMs),
         SleepSec is SleepMs / 1000,
         sleep(SleepSec),
@@ -165,9 +201,14 @@ process_messages(Name) :-
 
 process_message_list(_, []).
 process_message_list(Name, [message(From, Content, T) | Rest]) :-
-    log_agent(Name, "Received from ~w: ~w", [From, Content]),
-    record_past(Name, received(Content, From), T),
-    fire_handlers(Name, Content),
+    (should_allow_receive(Name, Content, _Priority) ->
+        log_agent(Name, "Received from ~w: ~w", [From, Content]),
+        record_past(Name, received(Content, From), T),
+        fire_handlers(Name, Content),
+        fire_learning(Name, Content)
+    ;
+        log_agent(Name, "Message rejected by told rule: ~w from ~w", [Content, From])
+    ),
     process_message_list(Name, Rest).
 
 %% process_injected_events(+Name) - Process events from the inject queue
@@ -184,6 +225,7 @@ process_injected_list(Name, [Event | Rest]) :-
     get_time(Stamp), T is truncate(Stamp * 1000),
     record_past(Name, injected(Event), T),
     fire_handlers(Name, Event),
+    fire_learning(Name, Event),
     process_injected_list(Name, Rest).
 
 %% fire_handlers(+Name, +Event) - Fire all matching handlers for an event
@@ -198,7 +240,7 @@ fire_handlers(Name, Event) :-
 fire_handler_list(_, _, []).
 fire_handler_list(Name, Event, [Pattern-Body | Rest]) :-
     (copy_term(Pattern-Body, EventCopy-BodyCopy),
-     EventCopy = Event ->
+     (EventCopy = Event ; ontology_match(Name, EventCopy, Event)) ->
         catch(
             execute_body(Name, BodyCopy),
             Error,
@@ -254,6 +296,323 @@ process_monitors(Name) :-
     ).
 
 %% ============================================================
+%% INTERNAL EVENTS (proactive)
+%% ============================================================
+
+%% process_internals(+Name) - Fire internal events whose conditions are met
+process_internals(Name) :-
+    get_time(Now),
+    forall(
+        loader:agent_internal(Name, Event, Options, Body),
+        process_single_internal(Name, Event, Options, Body, Now)
+    ).
+
+process_single_internal(Name, Event, Options, Body, Now) :-
+    term_to_atom(Event, InternalId),
+    (should_fire_internal(Name, InternalId, Options, Now) ->
+        catch(
+            (copy_term(Event-Body, _ECopy-BodyCopy),
+             execute_body(Name, BodyCopy),
+             increment_internal_count(Name, InternalId),
+             get_time(Stamp), T is truncate(Stamp * 1000),
+             record_past(Name, internal(Event), T),
+             fire_learning(Name, Event)),
+            Error,
+            log_agent(Name, "Internal event error: ~w", [Error])
+        )
+    ; true).
+
+should_fire_internal(Name, InternalId, Options, Now) :-
+    (Options = [] -> true ;
+     is_list(Options) -> check_all_internal_opts(Name, InternalId, Options, Now) ;
+     check_single_internal_opt(Name, InternalId, Options, Now)).
+
+check_all_internal_opts(_, _, [], _).
+check_all_internal_opts(Name, Id, [Opt|Rest], Now) :-
+    check_single_internal_opt(Name, Id, Opt, Now),
+    check_all_internal_opts(Name, Id, Rest, Now).
+
+check_single_internal_opt(_, _, forever, _).
+
+check_single_internal_opt(Name, Id, times(N), _) :-
+    (agent_internal_count(Name, Id, Count) -> Count < N ; true).
+
+check_single_internal_opt(Name, _, until(Condition), _) :-
+    \+ call_condition(Name, Condition).
+
+check_single_internal_opt(_, _, between(time(H1,M1), time(H2,M2)), Now) :-
+    stamp_date_time(Now, DateTime, local),
+    date_time_value(hour, DateTime, H),
+    date_time_value(minute, DateTime, M),
+    CurrentMinutes is H * 60 + M,
+    StartMinutes is H1 * 60 + M1,
+    EndMinutes is H2 * 60 + M2,
+    CurrentMinutes >= StartMinutes,
+    CurrentMinutes =< EndMinutes.
+
+check_single_internal_opt(_, _, between(date(Y1,Mo1,D1), date(Y2,Mo2,D2)), Now) :-
+    stamp_date_time(Now, DateTime, local),
+    date_time_value(year, DateTime, Y),
+    date_time_value(month, DateTime, Mo),
+    date_time_value(day, DateTime, D),
+    DayCurrent is Y * 10000 + Mo * 100 + D,
+    DayStart is Y1 * 10000 + Mo1 * 100 + D1,
+    DayEnd is Y2 * 10000 + Mo2 * 100 + D2,
+    DayCurrent >= DayStart,
+    DayCurrent =< DayEnd.
+
+increment_internal_count(Name, InternalId) :-
+    (retract(agent_internal_count(Name, InternalId, N)) ->
+        N1 is N + 1,
+        assert(agent_internal_count(Name, InternalId, N1))
+    ;
+        assert(agent_internal_count(Name, InternalId, 1))
+    ).
+
+%% ============================================================
+%% CONDITION-ACTION RULES (edge-triggered)
+%% ============================================================
+
+%% process_condition_actions(+Name) - Fire body on rising edge of condition
+process_condition_actions(Name) :-
+    forall(
+        loader:agent_condition_action(Name, Condition, Body),
+        (term_to_atom(Condition, CondId),
+         catch(
+            (call_condition(Name, Condition) ->
+                (agent_condition_state(Name, CondId, true) ->
+                    true
+                ;
+                    retractall(agent_condition_state(Name, CondId, _)),
+                    assert(agent_condition_state(Name, CondId, true)),
+                    log_agent(Name, "Condition became true: ~w", [Condition]),
+                    catch(
+                        execute_body(Name, Body),
+                        Error,
+                        log_agent(Name, "Condition-action error: ~w", [Error])
+                    )
+                )
+            ;
+                retractall(agent_condition_state(Name, CondId, _)),
+                assert(agent_condition_state(Name, CondId, false))
+            ),
+            _,
+            true
+        ))
+    ).
+
+%% ============================================================
+%% PRESENT/ENVIRONMENT EVENTS
+%% ============================================================
+
+%% process_present_events(+Name) - Check environment conditions each cycle
+process_present_events(Name) :-
+    forall(
+        loader:agent_present(Name, Condition, Body),
+        (catch(
+            (call_condition(Name, Condition) ->
+                catch(
+                    execute_body(Name, Body),
+                    Error,
+                    log_agent(Name, "Present event error: ~w", [Error])
+                )
+            ; true),
+            _,
+            true
+        ))
+    ).
+
+%% ============================================================
+%% MULTI-EVENTS (fire when all listed events occurred)
+%% ============================================================
+
+%% process_multi_events(+Name) - Fire when all events in the list have past records
+process_multi_events(Name) :-
+    forall(
+        loader:agent_multi_event(Name, EventList, Body),
+        (term_to_atom(EventList, MultiId),
+         (all_events_occurred(Name, EventList) ->
+            (agent_multi_fired(Name, MultiId) ->
+                true
+            ;
+                assert(agent_multi_fired(Name, MultiId)),
+                log_agent(Name, "All events occurred: ~w", [EventList]),
+                catch(
+                    execute_body(Name, Body),
+                    Error,
+                    log_agent(Name, "Multi-event error: ~w", [Error])
+                )
+            )
+         ;
+            retractall(agent_multi_fired(Name, MultiId))
+         ))
+    ).
+
+all_events_occurred(_, []).
+all_events_occurred(Name, [Event|Rest]) :-
+    event_in_past(Name, Event),
+    all_events_occurred(Name, Rest).
+
+event_in_past(Name, Event) :-
+    agent_past_event(Name, received(Event, _), _, _), !.
+event_in_past(Name, Event) :-
+    agent_past_event(Name, injected(Event), _, _), !.
+event_in_past(Name, Event) :-
+    agent_past_event(Name, internal(Event), _, _), !.
+event_in_past(Name, Event) :-
+    agent_past_event(Name, Event, _, _), !.
+
+%% ============================================================
+%% CONSTRAINTS (invariant checking)
+%% ============================================================
+
+%% process_constraints(+Name) - Check all constraints; fire handler if violated
+process_constraints(Name) :-
+    forall(
+        loader:agent_constraint(Name, Condition, Body),
+        (catch(
+            (call_condition(Name, Condition) ->
+                true
+            ;
+                log_agent(Name, "Constraint violated: ~w", [Condition]),
+                (Body \== true ->
+                    catch(
+                        execute_body(Name, Body),
+                        Error,
+                        log_agent(Name, "Constraint handler error: ~w", [Error])
+                    )
+                ; true)
+            ),
+            _,
+            true
+        ))
+    ).
+
+%% ============================================================
+%% GOALS (achieve / test)
+%% ============================================================
+
+%% process_goals(+Name) - Process achieve and test goals
+process_goals(Name) :-
+    forall(
+        loader:agent_goal(Name, Type, Goal, Plan),
+        process_single_goal(Name, Type, Goal, Plan)
+    ).
+
+process_single_goal(Name, achieve, Goal, Plan) :-
+    term_to_atom(Goal, GoalId),
+    (agent_goal_status(Name, GoalId, achieved) ->
+        true
+    ;
+        (call_condition(Name, Goal) ->
+            retractall(agent_goal_status(Name, GoalId, _)),
+            assert(agent_goal_status(Name, GoalId, achieved)),
+            log_agent(Name, "Goal achieved: ~w", [Goal]),
+            get_time(Stamp), T is truncate(Stamp * 1000),
+            record_past(Name, goal_achieved(Goal), T)
+        ;
+            catch(
+                execute_body(Name, Plan),
+                Error,
+                log_agent(Name, "Goal plan error for ~w: ~w", [Goal, Error])
+            )
+        )
+    ).
+
+process_single_goal(Name, test, Goal, Plan) :-
+    term_to_atom(Goal, GoalId),
+    (agent_goal_status(Name, GoalId, _) ->
+        true
+    ;
+        catch(
+            (execute_body(Name, Plan) ->
+                (call_condition(Name, Goal) ->
+                    assert(agent_goal_status(Name, GoalId, succeeded)),
+                    log_agent(Name, "Test goal succeeded: ~w", [Goal])
+                ;
+                    assert(agent_goal_status(Name, GoalId, failed)),
+                    log_agent(Name, "Test goal failed: ~w", [Goal])
+                )
+            ;
+                assert(agent_goal_status(Name, GoalId, failed)),
+                log_agent(Name, "Test goal plan failed: ~w", [Goal])
+            ),
+            Error,
+            (assert(agent_goal_status(Name, GoalId, error)),
+             log_agent(Name, "Test goal error for ~w: ~w", [Goal, Error]))
+        )
+    ).
+
+%% ============================================================
+%% TELL/TOLD COMMUNICATION FILTERING
+%% ============================================================
+
+%% should_allow_send(+Sender, +Content) - Check sender's tell rules
+should_allow_send(Sender, Content) :-
+    (   \+ loader:agent_tell(Sender, _)
+    ->  true
+    ;   loader:agent_tell(Sender, Pattern),
+        subsumes_term(Pattern, Content)
+    ).
+
+%% should_allow_receive(+Receiver, +Content, -Priority) - Check receiver's told rules
+should_allow_receive(Receiver, Content, Priority) :-
+    (   \+ loader:agent_told(Receiver, _, _)
+    ->  Priority = 0
+    ;   loader:agent_told(Receiver, Pattern, Priority),
+        subsumes_term(Pattern, Content)
+    ).
+
+%% ============================================================
+%% ONTOLOGY MATCHING
+%% ============================================================
+
+%% ontology_match(+Name, +Term1, +Term2) - Check if terms are equivalent via ontology
+ontology_match(_, Term1, Term2) :-
+    Term1 = Term2, !.
+ontology_match(Name, Term1, Term2) :-
+    loader:agent_ontology(Name, same_as(Term1, Term2)), !.
+ontology_match(Name, Term1, Term2) :-
+    loader:agent_ontology(Name, same_as(Term2, Term1)), !.
+ontology_match(Name, Term1, Term2) :-
+    functor(Term1, F1, A), functor(Term2, F2, A),
+    (loader:agent_ontology(Name, eq_property(F1, F2)) ;
+     loader:agent_ontology(Name, eq_property(F2, F1))),
+    Term1 =.. [F1|Args], Term2 =.. [F2|Args2],
+    maplist(=, Args, Args2), !.
+ontology_match(Name, Term1, Term2) :-
+    functor(Term1, F1, A), functor(Term2, F2, A),
+    (loader:agent_ontology(Name, eq_class(F1, F2)) ;
+     loader:agent_ontology(Name, eq_class(F2, F1))),
+    Term1 =.. [F1|Args], Term2 =.. [F2|Args2],
+    maplist(=, Args, Args2), !.
+ontology_match(Name, Term1, Term2) :-
+    loader:agent_ontology(Name, symmetric(Rel)),
+    Term1 =.. [Rel, A, B],
+    Term2 =.. [Rel, B, A], !.
+
+%% ============================================================
+%% LEARNING
+%% ============================================================
+
+%% fire_learning(+Name, +Event) - Check learning rules when an event occurs
+fire_learning(Name, Event) :-
+    forall(
+        loader:agent_learn_rule(Name, EventPattern, Outcome, Body),
+        (copy_term(EventPattern-Outcome-Body, ECopy-OCopy-BCopy),
+         (ECopy = Event ->
+            catch(
+                (execute_body(Name, BCopy) ->
+                    assert(agent_learned_rt(Name, Event, OCopy)),
+                    log_agent(Name, "Learned from ~w: ~w", [Event, OCopy])
+                ; true),
+                _,
+                true
+            )
+         ; true))
+    ).
+
+%% ============================================================
 %% BODY EXECUTION - Interprets agent DSL predicates
 %% ============================================================
 
@@ -284,10 +643,14 @@ execute_body(Name, not(Goal)) :- !,
 
 % --- DALI2 DSL predicates ---
 
-% send(To, Content) - Send a message to another agent
+% send(To, Content) - Send a message to another agent (with tell/told filtering)
 execute_body(Name, send(To, Content)) :- !,
-    communication:send(Name, To, Content),
-    log_agent(Name, "Sent to ~w: ~w", [To, Content]).
+    (should_allow_send(Name, Content) ->
+        communication:send(Name, To, Content),
+        log_agent(Name, "Sent to ~w: ~w", [To, Content])
+    ;
+        log_agent(Name, "Send blocked by tell rule: ~w to ~w", [Content, To])
+    ).
 
 % broadcast(Content) - Send to all other agents
 execute_body(Name, broadcast(Content)) :- !,
@@ -317,9 +680,11 @@ execute_body(Name, retract_belief(Fact)) :- !,
     retractall(agent_belief_rt(Name, Fact)),
     log_agent(Name, "Belief removed: ~w", [Fact]).
 
-% believes(Fact) - Check if agent has a belief
+% believes(Fact) - Check if agent has a belief (ontology-aware)
 execute_body(Name, believes(Fact)) :- !,
-    agent_belief_rt(Name, Fact).
+    (agent_belief_rt(Name, Fact) -> true
+    ; agent_belief_rt(Name, Other), ontology_match(Name, Fact, Other)
+    ).
 
 % has_past(Event) - Check if event is in past
 execute_body(Name, has_past(Event)) :- !,
@@ -365,6 +730,48 @@ execute_body(Name, ask_ai(Context, SystemPrompt, Result)) :- !,
 % ai_available - Check if AI oracle is configured
 execute_body(_, ai_available) :- !,
     ai_oracle:ai_available.
+
+% learn(Pattern, Outcome) - Record a learned association
+execute_body(Name, learn(Pattern, Outcome)) :- !,
+    assert(agent_learned_rt(Name, Pattern, Outcome)),
+    log_agent(Name, "Learned: ~w -> ~w", [Pattern, Outcome]).
+
+% learned(Pattern, Outcome) - Check if agent has learned something
+execute_body(Name, learned(Pattern, Outcome)) :- !,
+    agent_learned_rt(Name, Pattern, Outcome).
+
+% forget(Pattern) - Remove all learned associations for Pattern
+execute_body(Name, forget(Pattern)) :- !,
+    retractall(agent_learned_rt(Name, Pattern, _)),
+    log_agent(Name, "Forgot: ~w", [Pattern]).
+
+% onto_match(Term1, Term2) - Check ontology equivalence
+execute_body(Name, onto_match(Term1, Term2)) :- !,
+    ontology_match(Name, Term1, Term2).
+
+% achieve(Goal) - Manually trigger an achieve goal
+execute_body(Name, achieve(Goal)) :- !,
+    process_single_goal(Name, achieve, Goal, true).
+
+% reset_goal(Goal) - Reset a goal so it can be re-attempted
+execute_body(Name, reset_goal(Goal)) :- !,
+    term_to_atom(Goal, GoalId),
+    retractall(agent_goal_status(Name, GoalId, _)),
+    log_agent(Name, "Goal reset: ~w", [Goal]).
+
+% bb_read(Pattern) - Read from shared blackboard
+execute_body(_, bb_read(Pattern)) :- !,
+    blackboard:bb_get(Pattern).
+
+% bb_write(Tuple) - Write to shared blackboard
+execute_body(Name, bb_write(Tuple)) :- !,
+    blackboard:bb_put(Tuple),
+    log_agent(Name, "Blackboard write: ~w", [Tuple]).
+
+% bb_remove(Pattern) - Remove from shared blackboard
+execute_body(Name, bb_remove(Pattern)) :- !,
+    blackboard:bb_take(Pattern),
+    log_agent(Name, "Blackboard remove: ~w", [Pattern]).
 
 % findall/3 - Standard findall
 execute_body(Name, findall(T, Goal, L)) :- !,
@@ -432,10 +839,23 @@ execute_body(Name, Goal) :-
 %% CONDITION EVALUATION
 %% ============================================================
 
+call_condition(Name, (C1, C2)) :- !,
+    call_condition(Name, C1),
+    call_condition(Name, C2).
 call_condition(Name, believes(Fact)) :- !,
-    agent_belief_rt(Name, Fact).
+    (agent_belief_rt(Name, Fact) -> true
+    ; agent_belief_rt(Name, Other), ontology_match(Name, Fact, Other)
+    ).
 call_condition(Name, has_past(Event)) :- !,
-    agent_past_event(Name, Event, _, _).
+    (agent_past_event(Name, Event, _, _) -> true
+    ; event_in_past(Name, Event)
+    ).
+call_condition(Name, learned(Pattern, Outcome)) :- !,
+    agent_learned_rt(Name, Pattern, Outcome).
+call_condition(Name, onto_match(T1, T2)) :- !,
+    ontology_match(Name, T1, T2).
+call_condition(Name, bb_read(Pattern)) :- !,
+    blackboard:bb_get(Pattern).
 call_condition(_, Cond) :-
     call(Cond).
 
