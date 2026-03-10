@@ -470,23 +470,38 @@ event_in_past(Name, Event) :-
 process_constraints(Name) :-
     forall(
         loader:agent_constraint(Name, Condition, Body),
-        (catch(
-            (call_condition(Name, Condition) ->
-                true
-            ;
-                log_agent(Name, "Constraint violated: ~w", [Condition]),
-                (Body \== true ->
-                    catch(
-                        execute_body(Name, Body),
-                        Error,
-                        log_agent(Name, "Constraint handler error: ~w", [Error])
-                    )
-                ; true)
-            ),
-            _,
-            true
-        ))
+        check_single_constraint(Name, Condition, Body)
     ).
+
+check_single_constraint(Name, Condition, Body) :-
+    copy_term(Condition-Body, TestCond-_TestBody),
+    (catch(call_condition(Name, TestCond), _, fail) ->
+        true  % constraint satisfied
+    ;
+        % Constraint violated - rebind variables for the body
+        copy_term(Condition-Body, BCond-BBody),
+        attempt_bind(Name, BCond),
+        log_agent(Name, "Constraint violated: ~w", [BCond]),
+        (BBody \== true ->
+            catch(
+                execute_body(Name, BBody),
+                Error,
+                log_agent(Name, "Constraint handler error: ~w", [Error])
+            )
+        ; true)
+    ).
+
+%% attempt_bind(+Name, +Condition) - Bind variables from state-querying parts of a condition
+attempt_bind(Name, (C1, C2)) :- !,
+    attempt_bind(Name, C1),
+    attempt_bind(Name, C2).
+attempt_bind(Name, believes(Fact)) :- !,
+    (agent_belief_rt(Name, Fact) -> true ; true).
+attempt_bind(Name, has_past(Event)) :- !,
+    (agent_past_event(Name, Event, _, _) -> true ; true).
+attempt_bind(Name, learned(P, O)) :- !,
+    (agent_learned_rt(Name, P, O) -> true ; true).
+attempt_bind(_, _).  % skip tests (arithmetic, comparisons, etc.)
 
 %% ============================================================
 %% GOALS (achieve / test)
@@ -499,8 +514,13 @@ process_goals(Name) :-
         process_single_goal(Name, Type, Goal, Plan)
     ).
 
+goal_canonical_id(Goal, GoalId) :-
+    copy_term(Goal, GCopy),
+    numbervars(GCopy, 0, _),
+    term_to_atom(GCopy, GoalId).
+
 process_single_goal(Name, achieve, Goal, Plan) :-
-    term_to_atom(Goal, GoalId),
+    goal_canonical_id(Goal, GoalId),
     (agent_goal_status(Name, GoalId, achieved) ->
         true
     ;
@@ -520,7 +540,7 @@ process_single_goal(Name, achieve, Goal, Plan) :-
     ).
 
 process_single_goal(Name, test, Goal, Plan) :-
-    term_to_atom(Goal, GoalId),
+    goal_canonical_id(Goal, GoalId),
     (agent_goal_status(Name, GoalId, _) ->
         true
     ;
@@ -854,7 +874,7 @@ call_condition(Name, learned(Pattern, Outcome)) :- !,
     agent_learned_rt(Name, Pattern, Outcome).
 call_condition(Name, onto_match(T1, T2)) :- !,
     ontology_match(Name, T1, T2).
-call_condition(Name, bb_read(Pattern)) :- !,
+call_condition(_Name, bb_read(Pattern)) :- !,
     blackboard:bb_get(Pattern).
 call_condition(_, Cond) :-
     call(Cond).

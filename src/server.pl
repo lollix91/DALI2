@@ -15,7 +15,7 @@ user:message_hook(_, informational, _) :- !.
 :- use_module(library(http/http_files)).
 :- use_module(library(http/http_header)).
 :- use_module(library(http/http_cors)).
-:- use_module(library(http/json)).
+:- use_module(library(json)).
 :- use_module(library(lists)).
 
 :- set_setting(http:cors, [*]).

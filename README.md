@@ -7,11 +7,14 @@ DALI2 is a complete rewrite of the [DALI](https://github.com/AAAI-DISIM-UnivAQ/D
 ## Key Features
 
 - **Single-file agent definitions** — define all agents in one `.pl` file
+- **Full DALI feature set** — reactive rules, internal events, goals, constraints, learning, ontologies, tell/told filtering, and more
 - **Integrated web UI** — dashboard, log viewer, message sender, agent inspector
 - **Docker-ready** — runs in a container, no local installation needed
 - **Single-process architecture** — all agents run as threads in one SWI-Prolog instance
 - **Simplified syntax** — no tokenizer, no intermediate files, no E/I/A suffixes
 - **In-memory blackboard** — no TCP-based Linda server needed
+
+**Documentation:** [RULES.md](RULES.md) (language reference) · [EXAMPLES.md](EXAMPLES.md) (examples guide)
 
 ## Quick Start
 
@@ -243,7 +246,7 @@ run.bat
 
 ## Agent Language
 
-Agents are defined in a single `.pl` file using a simple syntax. See [RULES.md](RULES.md) for the complete language reference.
+Agents are defined in a single `.pl` file using a simple syntax. See [RULES.md](RULES.md) for the complete language reference and [EXAMPLES.md](EXAMPLES.md) for example walkthroughs with test commands.
 
 ```prolog
 %% Declare an agent with options
@@ -458,6 +461,7 @@ DALI2/
 ├── docker-compose.distributed.yml   # Multi-instance federation
 ├── run.bat
 ├── RULES.md                         # Complete language reference
+├── EXAMPLES.md                      # Examples guide with test commands
 └── README.md
 ```
 

@@ -12,7 +12,7 @@
 
 :- use_module(library(http/http_open)).
 :- use_module(library(http/http_client)).
-:- use_module(library(http/json)).
+:- use_module(library(json)).
 :- use_module(library(readutil)).
 
 :- dynamic ai_api_key/1.
