@@ -26,6 +26,7 @@
 :- use_module(blackboard).
 :- use_module(communication).
 :- use_module(loader).
+:- use_module(ai_oracle).
 :- use_module(library(lists)).
 
 %% Agent runtime state (thread-local per agent, but stored globally with agent name key)
@@ -348,6 +349,22 @@ execute_body(Name, helper(Goal)) :- !,
     ;
         log_agent(Name, "Unknown helper: ~w", [Goal])
     ).
+
+% ask_ai(Context, Result) - Query the AI oracle
+execute_body(Name, ask_ai(Context, Result)) :- !,
+    log_agent(Name, "Querying AI oracle: ~w", [Context]),
+    ai_oracle:ask_ai(Context, Result),
+    log_agent(Name, "AI oracle response: ~w", [Result]).
+
+% ask_ai(Context, SystemPrompt, Result) - Query AI oracle with custom prompt
+execute_body(Name, ask_ai(Context, SystemPrompt, Result)) :- !,
+    log_agent(Name, "Querying AI oracle: ~w", [Context]),
+    ai_oracle:ask_ai(Context, SystemPrompt, Result),
+    log_agent(Name, "AI oracle response: ~w", [Result]).
+
+% ai_available - Check if AI oracle is configured
+execute_body(_, ai_available) :- !,
+    ai_oracle:ai_available.
 
 % findall/3 - Standard findall
 execute_body(Name, findall(T, Goal, L)) :- !,

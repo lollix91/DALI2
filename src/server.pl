@@ -20,6 +20,7 @@
 :- use_module(communication).
 :- use_module(loader).
 :- use_module(engine).
+:- use_module(ai_oracle).
 
 %% HTTP Routes
 :- http_handler(root(.),         serve_index,       []).
@@ -36,6 +37,10 @@
 :- http_handler(root(api/blackboard),api_blackboard,[]).
 :- http_handler(root(api/source),    api_source,    []).
 :- http_handler(root(api/save),      api_save,      [method(post)]).
+:- http_handler(root(api/ai/status), api_ai_status, []).
+:- http_handler(root(api/ai/key),    api_ai_key,    [method(post)]).
+:- http_handler(root(api/ai/ask),    api_ai_ask,    [method(post)]).
+:- http_handler(root(api/ai/model),  api_ai_model,  [method(post)]).
 :- http_handler(root(static),  serve_static, [prefix]).
 
 %% ============================================================
@@ -124,11 +129,9 @@ api_status(_Request) :-
     bb_agents(Agents),
     length(Agents, Count),
     (current_agent_file(F) -> File = F ; File = ''),
-    reply_json_dict(_{
-        status: running,
-        agents: Count,
-        file: File
-    }).
+    (ai_oracle:ai_available -> AI = true ; AI = false),
+    (ai_oracle:ai_model(Model) -> true ; Model = 'none'),
+    reply_json_dict(_{status: running, agents: Count, file: File, ai_enabled: AI, ai_model: Model}).
 
 %% GET /api/agents - List agents with status
 api_agents(_Request) :-
@@ -343,4 +346,54 @@ api_save(Request) :-
         reply_json_dict(_{ok: true, message: "Saved"})
     ;
         reply_json_dict(_{ok: false, error: "No agent file loaded"})
+    ).
+
+%% ============================================================
+%% AI ORACLE API HANDLERS
+%% ============================================================
+
+%% GET /api/ai/status - AI oracle status
+api_ai_status(_Request) :-
+    cors_enable,
+    (ai_oracle:ai_available -> Enabled = true ; Enabled = false),
+    (ai_oracle:ai_model(Model) -> true ; Model = 'none'),
+    reply_json_dict(_{enabled: Enabled, model: Model}).
+
+%% POST /api/ai/key - Set the OpenAI API key at runtime
+%%   Body: {"key": "sk-..."}
+api_ai_key(Request) :-
+    cors_enable,
+    http_read_json_dict(Request, Dict),
+    atom_string(Key, Dict.key),
+    ai_oracle:set_ai_key(Key),
+    reply_json_dict(_{ok: true, message: "API key set"}).
+
+%% POST /api/ai/model - Set the AI model
+%%   Body: {"model": "gpt-4o-mini"}
+api_ai_model(Request) :-
+    cors_enable,
+    http_read_json_dict(Request, Dict),
+    atom_string(Model, Dict.model),
+    ai_oracle:set_ai_model(Model),
+    reply_json_dict(_{ok: true, message: "Model set"}).
+
+%% POST /api/ai/ask - Directly query the AI oracle from the UI
+%%   Body: {"context": "...", "system_prompt": "..."} (system_prompt optional)
+api_ai_ask(Request) :-
+    cors_enable,
+    http_read_json_dict(Request, Dict),
+    atom_string(Context, Dict.context),
+    catch(
+        (   (get_dict(system_prompt, Dict, SysStr), SysStr \= "" ->
+                atom_string(SysPrompt, SysStr),
+                ai_oracle:ask_ai(Context, SysPrompt, Result)
+            ;
+                ai_oracle:ask_ai(Context, Result)
+            ),
+            term_to_atom(Result, ResultAtom),
+            reply_json_dict(_{ok: true, result: ResultAtom})
+        ),
+        Error,
+        (term_to_atom(Error, ErrAtom),
+         reply_json_dict(_{ok: false, error: ErrAtom}))
     ).

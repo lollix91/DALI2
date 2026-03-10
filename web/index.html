@@ -62,6 +62,33 @@
                 <button id="btn-send" class="btn btn-primary">Send</button>
             </div>
 
+            <!-- AI Oracle -->
+            <div class="card" id="ai-card">
+                <h3>AI Oracle <span id="ai-status-badge" class="badge badge-off">OFF</span></h3>
+                <div class="form-group">
+                    <label for="ai-key-input">OpenAI API Key</label>
+                    <div class="input-row">
+                        <input type="password" id="ai-key-input" placeholder="sk-..." spellcheck="false">
+                        <button id="btn-set-key" class="btn btn-small">Set</button>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="ai-model-select">Model</label>
+                    <select id="ai-model-select">
+                        <option value="gpt-4o-mini">gpt-4o-mini</option>
+                        <option value="gpt-4o">gpt-4o</option>
+                        <option value="gpt-4-turbo">gpt-4-turbo</option>
+                        <option value="gpt-3.5-turbo">gpt-3.5-turbo</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="ai-context">Ask AI (test)</label>
+                    <input type="text" id="ai-context" placeholder="What action should the agent take?" spellcheck="false">
+                </div>
+                <button id="btn-ask-ai" class="btn btn-accent">Ask AI</button>
+                <div id="ai-response" class="ai-response" style="display:none"></div>
+            </div>
+
             <!-- Agent Details -->
             <div class="card" id="agent-details" style="display:none">
                 <h3>Agent: <span id="detail-name"></span></h3>

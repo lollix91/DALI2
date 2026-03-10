@@ -18,10 +18,25 @@ DALI2 is a complete rewrite of the [DALI](https://github.com/AAAI-DISIM-UnivAQ/D
 ### With Docker (recommended)
 
 ```sh
+# Default (agriculture example, no AI)
 docker compose up --build
+
+# Choose agent file
+AGENT_FILE=examples/emergency.pl docker compose up --build
+
+# With OpenAI API key for AI Oracle
+OPENAI_API_KEY=sk-your-key AGENT_FILE=examples/agriculture.pl docker compose up --build
 ```
 
 Open [http://localhost:8080](http://localhost:8080) in your browser.
+
+### Windows
+
+Run `run.bat` — it will interactively ask for agent file and API key:
+
+```sh
+run.bat
+```
 
 ### Without Docker
 
@@ -29,12 +44,6 @@ Requires [SWI-Prolog](https://www.swi-prolog.org/) installed locally.
 
 ```sh
 swipl -l src/server.pl -g main -t halt -- 8080 examples/agriculture.pl
-```
-
-### Windows
-
-```sh
-run.bat examples\agriculture.pl
 ```
 
 ## Agent Language
@@ -79,8 +88,40 @@ my_agent:believes(status(idle)).
 | `believes(Fact)` | Check if agent has a belief |
 | `has_past(Event)` | Check if event is in past memory |
 | `do(Action)` | Execute a defined action |
+| `ask_ai(Context, Result)` | Query the AI oracle, get a Prolog fact back |
+| `ask_ai(Context, Prompt, Result)` | Query AI with custom system prompt |
+| `ai_available` | Check if AI oracle is configured |
 
 All standard Prolog predicates (arithmetic, comparison, list operations, etc.) are also available.
+
+## AI Oracle (ChatGPT Integration)
+
+DALI2 can connect to OpenAI's ChatGPT API. Agents send context and receive a Prolog fact back.
+
+### Configuration
+
+- **Environment variable**: Set `OPENAI_API_KEY` when starting the Docker container
+- **Web UI**: Enter the key in the "AI Oracle" panel at runtime
+- **API**: `POST /api/ai/key` with `{"key": "sk-..."}`
+
+The API key is **optional** — if not set, `ai_available` fails and `ask_ai` returns `suggestion(no_ai_available)`.
+
+### Usage in agents
+
+```prolog
+my_agent:on(analyze(Data)) :-
+    ( ai_available ->
+        ask_ai(analyze_situation(Data), Advice),
+        log("AI says: ~w", [Advice]),
+        send(coordinator, ai_recommendation(Advice))
+    ;
+        log("AI not available, using default logic")
+    ).
+```
+
+### Supported models
+
+`gpt-4o-mini` (default), `gpt-4o`, `gpt-4-turbo`, `gpt-3.5-turbo`. Change via web UI or `POST /api/ai/model`.
 
 ## Web UI
 
@@ -110,6 +151,10 @@ The web interface at `http://localhost:8080` provides:
 | GET | `/api/blackboard` | View blackboard tuples |
 | GET | `/api/source` | Get agent file source |
 | POST | `/api/save` | Save agent file `{"content":"..."}` |
+| GET | `/api/ai/status` | AI oracle status (enabled, model) |
+| POST | `/api/ai/key` | Set OpenAI API key `{"key":"sk-..."}` |
+| POST | `/api/ai/model` | Set AI model `{"model":"gpt-4o"}` |
+| POST | `/api/ai/ask` | Query AI `{"context":"..."}` |
 
 ## Project Structure
 
@@ -120,6 +165,7 @@ DALI2/
 │   ├── communication.pl   # Message passing between agents
 │   ├── loader.pl          # Agent file parser
 │   ├── engine.pl          # Core metainterpreter
+│   ├── ai_oracle.pl       # OpenAI/ChatGPT integration
 │   └── server.pl          # HTTP server + entry point
 ├── web/
 │   ├── index.html         # Dashboard SPA
@@ -138,12 +184,13 @@ DALI2/
 
 | Aspect | DALI | DALI2 |
 |--------|------|-------|
-| Source files | ~20 | 5 |
+| Source files | ~20 | 6 |
 | Agent definition | Multiple files (instances.json + type files) | Single .pl file |
 | Process model | Separate process per agent + Linda server | Single process, multi-threaded |
 | Communication | TCP sockets (Linda) | In-memory blackboard |
 | Tokenizer | Complex (tokefun + togli_var + metti_var) | None (direct term_expansion) |
 | UI | Separate Python project (dalia) | Integrated web UI |
+| AI integration | External Python TCP service | Built-in (direct OpenAI API calls) |
 | Docker setup | Complex (SICStus install) | Simple (swipl base image) |
 | Event syntax | `eventE(X) :> body.` | `agent:on(event(X)) :- body.` |
 | Message sending | `messageA(dest, send_message(ev(X), Me))` | `send(dest, ev(X))` |

@@ -5,5 +5,7 @@ services:
       - "8080:8080"
     volumes:
       - ./examples:/dali2/examples
-    command: ["8080", "examples/agriculture.pl"]
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+    command: ["8080", "${AGENT_FILE:-examples/agriculture.pl}"]
     restart: unless-stopped

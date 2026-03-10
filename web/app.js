@@ -54,6 +54,18 @@ const postSave = (content) => api('/api/save', {
     method: 'POST', body: JSON.stringify({ content })
 });
 
+// AI Oracle API
+const getAiStatus = () => api('/api/ai/status');
+const postAiKey = (key) => api('/api/ai/key', {
+    method: 'POST', body: JSON.stringify({ key })
+});
+const postAiModel = (model) => api('/api/ai/model', {
+    method: 'POST', body: JSON.stringify({ model })
+});
+const postAiAsk = (context) => api('/api/ai/ask', {
+    method: 'POST', body: JSON.stringify({ context })
+});
+
 // ============================================================
 // UI Updates
 // ============================================================
@@ -334,6 +346,44 @@ function init() {
         poll();
     });
 
+    // --- AI Oracle ---
+    document.getElementById('btn-set-key').addEventListener('click', async () => {
+        const key = document.getElementById('ai-key-input').value.trim();
+        if (!key) return;
+        const res = await postAiKey(key);
+        if (res && res.ok) {
+            document.getElementById('ai-key-input').value = '';
+            updateAiStatus();
+        }
+    });
+
+    document.getElementById('ai-model-select').addEventListener('change', async () => {
+        const model = document.getElementById('ai-model-select').value;
+        await postAiModel(model);
+        updateAiStatus();
+    });
+
+    document.getElementById('btn-ask-ai').addEventListener('click', async () => {
+        const ctx = document.getElementById('ai-context').value.trim();
+        if (!ctx) return;
+        const respDiv = document.getElementById('ai-response');
+        respDiv.style.display = 'block';
+        respDiv.textContent = 'Querying AI...';
+        respDiv.className = 'ai-response loading';
+        const res = await postAiAsk(ctx);
+        if (res && res.ok) {
+            respDiv.textContent = res.result;
+            respDiv.className = 'ai-response success';
+        } else {
+            respDiv.textContent = res ? (res.error || 'Error') : 'Connection error';
+            respDiv.className = 'ai-response error';
+        }
+    });
+
+    document.getElementById('ai-context').addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') document.getElementById('btn-ask-ai').click();
+    });
+
     // Double-click header to open editor
     document.querySelector('.header-left').addEventListener('dblclick', async () => {
         const data = await getSource();
@@ -350,6 +400,31 @@ function init() {
     // Update blackboard every 5s
     updateBlackboard();
     setInterval(updateBlackboard, 5000);
+
+    // AI status
+    updateAiStatus();
+    setInterval(updateAiStatus, 10000);
+}
+
+async function updateAiStatus() {
+    const data = await getAiStatus();
+    const badge = document.getElementById('ai-status-badge');
+    if (data) {
+        if (data.enabled) {
+            badge.textContent = data.model || 'ON';
+            badge.className = 'badge badge-on';
+        } else {
+            badge.textContent = 'OFF';
+            badge.className = 'badge badge-off';
+        }
+        // Sync model selector
+        const sel = document.getElementById('ai-model-select');
+        if (data.model && sel) {
+            for (const opt of sel.options) {
+                if (opt.value === data.model) { sel.value = data.model; break; }
+            }
+        }
+    }
 }
 
 document.addEventListener('DOMContentLoaded', init);

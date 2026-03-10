@@ -50,6 +50,13 @@ crop_advisor:on(soil_data(Moisture, PH, Field)) :-
     ( (PH < 5.5 ; PH > 7.5) ->
         log("Abnormal pH ~w in ~w", [PH, Field]),
         send(farmer_agent, notify(ph_alert, Field, PH))
+    ; true ),
+    % If AI is available, ask for strategic advice on critical conditions
+    ( (Moisture < 20 ; PH < 5.0 ; PH > 8.0) ->
+        ( ai_available ->
+            ask_ai(soil_analysis(field(Field), moisture(Moisture), ph(PH)), Advice),
+            send(farmer_agent, notify(ai_advice, Field, Advice))
+        ; true )
     ; true ).
 
 % Handle weather data
