@@ -257,13 +257,13 @@ my_agent:on(some_event(Arg1, Arg2)) :-
     log("Received: ~w, ~w", [Arg1, Arg2]),
     send(other_agent, response(Arg1)).
 
-%% Internal event (proactive, fires every cycle while condition holds)
-my_agent:internal(check_status, [between(time(9,0), time(17,0))]) :-
-    log("Checking status during work hours").
+%% Internal event with per-event interval (fires every 5 seconds, not every cycle)
+my_agent:internal(check_status, [forever, interval(5)]) :-
+    log("Checking status every 5 seconds").
 
-%% Internal event with trigger (fires only when condition is true)
-my_agent:internal(cooling_check, [forever, trigger(believes(mode(cooling)))]) :-
-    log("Cooling mode active, monitoring...").
+%% Internal event with trigger + change condition
+my_agent:internal(temp_monitor, [times(5), trigger(believes(mode(cooling))), change([temperature(_)])]) :-
+    log("Monitoring temperature (resets when temp changes)").
 
 %% Periodic task (runs every N seconds)
 my_agent:every(10, log("Heartbeat")).
@@ -289,16 +289,37 @@ my_agent:constraint(believes(temperature(T)), T < 100) :-
     log("CRITICAL: Temperature constraint violated!"),
     send(safety, emergency_shutdown).
 
-%% Tell/told communication filtering (also applies to AI oracle queries/responses)
-my_agent:told(alarm(_)).              %% Accept alarm messages
-my_agent:told(status(_), 100).        %% Accept status with priority 100
+%% Tell/told communication filtering (priority queue: highest priority processed first)
+my_agent:told(alarm(_), 100).         %% Accept alarm messages (high priority)
+my_agent:told(status(_), 50).         %% Accept status (medium priority)
+my_agent:told(confirm(_), 90).        %% Accept FIPA confirm
 my_agent:tell(report(_)).             %% Only allowed to send report messages
-my_agent:tell(analyze(_)).            %% Allow sending analyze queries to AI oracle
 
-%% Ontology declarations
+%% FIPA message types (confirm, query_ref, propose, etc.)
+%% send(other, confirm(fact))        — receiver records confirmed(fact)
+%% send(other, query_ref(query))     — receiver auto-responds with matching beliefs
+%% send(other, propose(action))      — fires on_proposal handler
+
+%% Action proposal handler
+my_agent:on_proposal(task(T)) :-
+    from(Sender),
+    accept_proposal(Sender, task(T)),
+    do(process(T)).
+
+%% Past event lifetime & remember
+my_agent:past_lifetime(sensor_reading(_), 60).    %% expires after 60 seconds
+my_agent:remember_lifetime(sensor_reading(_), 3600). %% remembered for 1 hour
+my_agent:remember_limit(sensor_reading(_), 100, last). %% keep last 100
+
+%% Export past rules (consume matching past events)
+my_agent:on_past([alert(Type), reading(Val)]) :-
+    log("Alert ~w with reading ~w", [Type, Val]).
+
+%% Ontology declarations (inline or from file)
 my_agent:ontology(same_as(hot, warm)).
 my_agent:ontology(eq_property(temperature, temp)).
 my_agent:ontology(symmetric(near)).
+my_agent:ontology_file('ontology/domain.pl').
 
 %% Learning rule (triggered when matching event occurs)
 my_agent:learn_from(sensor_reading(T), high_temp) :-
@@ -330,9 +351,17 @@ my_agent:believes(status(idle)).
 | **Multi-event** | `agent:on_all([E1, E2, ...]) :- Body.` | Fires when all events occurred |
 | **Constraint** | `agent:constraint(Condition) :- Body.` | Invariant checking |
 | **Goal** | `agent:goal(achieve/test, Goal) :- Plan.` | Goal-directed behavior |
-| **Told** | `agent:told(Pattern, Priority).` | Accept message filter (also filters AI oracle responses) |
+| **Told** | `agent:told(Pattern, Priority).` | Accept filter + priority queue ordering |
 | **Tell** | `agent:tell(Pattern).` | Send message filter (also filters AI oracle queries) |
+| **Proposal** | `agent:on_proposal(Action) :- Body.` | Handle FIPA propose messages |
+| **Past lifetime** | `agent:past_lifetime(Pattern, Duration).` | Auto-expire past events |
+| **Remember** | `agent:remember_lifetime(Pattern, Duration).` | Remember tier lifetime |
+| **Remember limit** | `agent:remember_limit(Pattern, N, Mode).` | Keep only N (last/first) |
+| **Export past** | `agent:on_past([Events]) :- Body.` | Consume matching past events |
+| **Export past done** | `agent:on_past_done(Action, [Events]) :- Body.` | Fire if action was done |
+| **Export past !done** | `agent:on_past_not_done(Action, [Events]) :- Body.` | Fire if action NOT done |
 | **Ontology** | `agent:ontology(Declaration).` | Semantic equivalences |
+| **Ontology file** | `agent:ontology_file(Path).` | Load from external file |
 | **Learning** | `agent:learn_from(Event, Outcome) :- Body.` | Learn from experience |
 | **Action** | `agent:do(Action) :- Body.` | Named actions |
 | **Belief** | `agent:believes(Fact).` | Initial beliefs |
@@ -351,12 +380,18 @@ my_agent:believes(status(idle)).
 | `believes(Fact)` | Check if agent has a belief (ontology-aware) |
 | `has_past(Event)` | Check if event is in past memory |
 | `has_past(Event, Time)` | Check past with timestamp |
+| `has_remember(Event)` | Check if event is in remember tier |
+| `has_confirmed(Fact)` | Check if fact was FIPA-confirmed |
+| `from(Sender)` | Get current message sender |
+| `reply_to(Content)` | Reply to current sender |
+| `accept_proposal(To, Action)` | Send FIPA accept\_proposal |
+| `reject_proposal(To, Action)` | Send FIPA reject\_proposal |
 | `do(Action)` | Execute a defined action |
 | `learn(Pattern, Outcome)` | Record a learned association |
 | `learned(Pattern, Outcome)` | Check if something was learned |
 | `forget(Pattern)` | Remove learned associations |
 | `onto_match(Term1, Term2)` | Check ontology equivalence |
-| `achieve(Goal)` | Manually trigger an achieve goal |
+| `achieve(Goal)` | Trigger achieve goal (auto-residue if not satisfiable) |
 | `reset_goal(Goal)` | Reset a goal for re-attempt |
 | `bb_read(Pattern)` | Read from shared blackboard |
 | `bb_write(Tuple)` | Write to shared blackboard |
@@ -460,7 +495,8 @@ DALI2/
 │   ├── emergency.pl             # Emergency response (single node)
 │   ├── emergency_sensors.pl     # Distributed: sensor node
 │   ├── emergency_responders.pl  # Distributed: responder node
-│   └── showcase.pl              # All features showcase
+│   ├── showcase.pl              # All features showcase (32 features)
+│   └── test_ontology.pl         # External ontology file (used by logger in showcase)
 ├── Dockerfile
 ├── docker-compose.yml               # Single instance
 ├── docker-compose.distributed.yml   # Multi-instance federation
@@ -484,13 +520,20 @@ DALI2/
 | Docker setup | Complex (SICStus install) | Simple (swipl base image) |
 | Event syntax | `eventE(X) :> body.` | `agent:on(event(X)) :- body.` |
 | Message sending | `messageA(dest, send_message(ev(X), Me))` | `send(dest, ev(X))` |
-| Internal events | `internal_event/5` with `forever`/`until_cond`/`in_date` | `agent:internal(event, [options]) :- body.` with `trigger(Cond)` |
-| Tell/told | `told(_,inform(_),70)` in communication.con | `agent:told(pattern, priority).` (also filters AI oracle) |
+| Internal events | `internal_event/5` with `forever`/`until_cond`/`in_date` | `agent:internal(event, [options]) :- body.` with `interval`/`trigger`/`change` |
+| Tell/told | `told(_,inform(_),70)` in communication.con | `agent:told(pattern, priority).` (priority queue + AI oracle filter) |
+| FIPA messages | `confirm`/`disconfirm`/`propose`/`query_ref`/etc. | `send(to, confirm(fact))` — full FIPA-ACL support |
+| Action proposal | `propose(A,C,Ag)` + `call_propose` | `agent:on_proposal(action) :- body.` |
+| Past lifetime | `past_event(ev, 60)` + `remember_event(ev, 3600)` | `agent:past_lifetime(ev, 60).` + `remember_lifetime`/`remember_limit` |
+| Export past (~/) | `head ~/ body` | `agent:on_past([events]) :- body.` |
+| Export past (</) | `head </ body` | `agent:on_past_not_done(action, [events]) :- body.` |
+| Export past (?/) | `head ?/ body` | `agent:on_past_done(action, [events]) :- body.` |
+| Residue goals | `tenta_residuo(goal)` | `achieve(goal)` (auto-queued as residue) |
 | Condition-action | `cond :< action.` | `agent:on_change(cond) :- body.` |
 | Present events | `en(X)` with suffix N | `agent:on_present(cond) :- body.` |
 | Multi-events | `mul/1` | `agent:on_all([e1, e2]) :- body.` |
 | Constraints | `:~ constraint.` | `agent:constraint(cond) :- body.` |
-| Ontologies | `meta/3` + OWL files | `agent:ontology(same_as(a,b)).` |
+| Ontologies | `meta/3` + OWL files | `agent:ontology(same_as(a,b)).` + `agent:ontology_file('f.pl').` |
 | Learning | `learning.pl` + constraints | `agent:learn_from(event, outcome) :- body.` |
 | Goals | `obt_goal`/`test_goal` | `agent:goal(achieve/test, goal) :- plan.` |
 

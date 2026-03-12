@@ -201,38 +201,54 @@ curl http://localhost:8080/api/past?agent=coordinator
 
 **File:** `examples/showcase.pl`
 
-Demonstrates **all DALI2 rule types** and DSL predicates. This is the comprehensive reference example.
+Demonstrates **all 32 DALI2 features** in a single file. This is the comprehensive reference example that covers every rule type, DSL predicate, and advanced feature ported from DALI.
 
 ### Agents
 
 | Agent | Role | Features Demonstrated |
 |-------|------|----------------------|
-| `thermostat` | Temperature control | Internal events (incl. triggered), constraints, on_change, beliefs |
-| `sensor` | Sensor readings | Periodic tasks, present events, learning, goals, blackboard |
-| `coordinator` | Central coordination | Reactive rules, tell/told filtering (incl. AI oracle), multi-events, goals |
-| `logger` | Semantic logging | Ontology-aware matching, helpers |
+| `thermostat` | Temperature control | Internal events (interval, change, trigger, between), constraints, on_change |
+| `sensor` | Sensor readings | Periodic tasks, present events, learning, blackboard, past lifetime/remember |
+| `coordinator` | Central coordination | Tell/told (priority queue), FIPA messages, multi-events, goals, residue goals, export past rules, proposal sending, AI oracle |
+| `logger` | Semantic logging | Ontology (inline + external file), helpers, condition monitor |
+| `worker` | Task execution | Action proposals (on_proposal), FIPA responses, export past rules, told rules |
 
 ### Features Tested
 
 | # | Feature | Agent | How to Trigger |
 |---|---------|-------|----------------|
-| 1 | **Internal events** | thermostat | Automatic — `temp_check` fires every cycle, `startup_diagnostic` fires 3 times, `cooling_monitor` fires only when mode=cooling |
-| 2 | **Periodic tasks** | sensor | Automatic — heartbeat every 15 seconds |
-| 3 | **Goals (achieve)** | sensor | Automatic — calibration goal keeps trying until achieved |
-| 4 | **Goals (test)** | coordinator | Automatic — tests if alerts received (fires once) |
-| 5 | **Reactive rules** | all | Send events to agents (see commands below) |
-| 6 | **Learning** | sensor | Send `read_temp(85)` — learns overheating pattern |
-| 7 | **Learned knowledge** | sensor | Send `read_temp(90)` after first — detects repeated pattern |
-| 8 | **Constraints** | thermostat | Temperature > 50 triggers constraint violation |
-| 9 | **On_change** | thermostat | First time mode becomes `cooling` triggers edge event |
-| 10 | **Present events** | sensor | Blackboard data triggers environment observation |
-| 11 | **Multi-events** | coordinator | Both `sensor_data` AND `alert` in past triggers on_all |
-| 12 | **Tell/told filtering** | coordinator | Only accepts specific message patterns |
-| 13 | **Tell/told for AI oracle** | coordinator | Oracle queries filtered by tell, responses by told |
-| 14 | **Triggered internal** | thermostat | `cooling_monitor` fires only when `believes(mode(cooling))` |
-| 15 | **Ontology** | logger | `log_event` matches `log_entry` via `same_as` |
-| 16 | **Helpers** | logger | `count_logs` helper tracks log entries |
-| 17 | **Blackboard** | sensor | Writes environment data to shared blackboard |
+| 1 | **Reactive rules** (`on`) | all | Send events to agents |
+| 2 | **Internal event interval** | thermostat | Automatic — `temp_check` fires every 5s (not every cycle) |
+| 3 | **Internal event change** | thermostat | Send `update_temp` — `startup_diagnostic` counter resets |
+| 4 | **Internal event trigger** | thermostat | `cooling_monitor` fires only when `mode(cooling)` |
+| 5 | **Internal event between** | thermostat | `work_hours_check` fires in time window |
+| 6 | **Periodic tasks** | sensor | Automatic — heartbeat every 15 seconds |
+| 7 | **Condition monitors** (`when`) | logger | Warns when log volume > 10 |
+| 8 | **Condition-action** (`on_change`) | thermostat | Edge-triggered when cooling mode activates |
+| 9 | **Present events** | sensor | Blackboard data triggers environment observation |
+| 10 | **Multi-events** (`on_all`) | coordinator | Both `sensor_data` + `alert` → fires |
+| 11 | **Constraints** | thermostat | Temperature > 50 triggers violation |
+| 12 | **Goals (achieve)** | sensor | Calibration goal keeps trying until achieved |
+| 13 | **Goals (test)** | coordinator | Tests if alerts received |
+| 14 | **Tell/told filtering** | coordinator | Only accepts specific patterns; rejects others |
+| 15 | **Priority queue** | coordinator | Messages sorted by told priority (200→10) |
+| 16 | **FIPA confirm** | coordinator→worker | Inject `send_confirm(system_ok)` into coordinator |
+| 17 | **FIPA query_ref** | coordinator→worker | Inject `query_worker(status(_))` — auto-response |
+| 18 | **FIPA propose/accept** | coordinator→worker | Inject `request_analysis(data)` |
+| 19 | **FIPA propose/reject** | coordinator→worker | Inject `test_reject` |
+| 20 | **FIPA inform** | worker→coordinator | Worker sends analysis results |
+| 21 | **Action proposals** (`on_proposal`) | worker | Accepts/rejects proposals from coordinator |
+| 22 | **Past lifetime + remember** | sensor | `sensor_data` expires after 30s, remembered 5min |
+| 23 | **Export past** (`on_past`) | coordinator | Alert + sensor_data consumed together |
+| 24 | **Export past** (`on_past_not_done`) | coordinator | Fires if backup NOT done |
+| 25 | **Residue goals** | coordinator | Inject `start_residue_test` then `residue_resolved` |
+| 26 | **External ontology file** | logger | Loads `test_ontology.pl` on startup |
+| 27 | **Inline ontology** | logger | `log_event` matches `log_entry` via `same_as` |
+| 28 | **Learning** | sensor | `read_temp(85)` → learns overheating pattern |
+| 29 | **Actions** (`do`) | worker | `analyze(Data)` action definition |
+| 30 | **Helpers** | logger | `count_logs` helper |
+| 31 | **Blackboard** | sensor | Writes environment data |
+| 32 | **AI Oracle** | coordinator | Emergency analysis (if API key configured) |
 
 ### Test Commands — Step by Step
 
@@ -242,13 +258,16 @@ swipl -l src/server.pl -g main -- 8080 examples/showcase.pl
 ```
 
 **Automatic behavior on startup:**
-- thermostat: internal events fire (`temp_check` every cycle, `startup_diagnostic` 3 times). The `cooling_monitor` does **not** fire yet (mode is `idle`)
+- thermostat: `temp_check` fires every 5s (interval), `startup_diagnostic` fires 3 times (change resets on temp change), `work_hours_check` fires (between), `cooling_monitor` does NOT fire (mode=idle)
 - sensor: periodic heartbeat, achieve goal sends calibration requests
 - coordinator: calibrates sensor, test goal checks for alerts
+- logger: loads `test_ontology.pl` (external ontology)
 - After ~4 seconds: sensor calibration achieved
 
 ```bash
-# STEP 1: Send first temperature reading (triggers learning)
+# STEP 1: Send first temperature reading
+# Triggers: learning, blackboard, present event, on_change, triggered internal,
+#           constraint, export past (on_past), change condition reset, priority queue
 curl -X POST http://localhost:8080/api/send \
   -H "Content-Type: application/json" \
   -d '{"to":"sensor","content":"read_temp(85)"}'
@@ -256,58 +275,114 @@ curl -X POST http://localhost:8080/api/send \
 
 **Expected:**
 - Sensor reads 85, writes to blackboard, sends `sensor_data(85)` to coordinator
-- **Learning**: `Learned from read_temp(85): overheating`
-- **Present event**: blackboard data detected, sends `update_temp(85)` to thermostat
-- Thermostat updates temp to 85, activates cooling mode
-- **On_change**: "Cooling mode just activated" (fires once)
-- **Triggered internal**: `cooling_monitor` now fires: "TRIGGERED INTERNAL: Monitoring cooling, current temp: 85" (was inactive while mode=idle)
-- **Constraint violated**: 85 > 50 → "Temperature 85 exceeds safe limit!"
-- Thermostat sends `emergency(overheating, 85)` to coordinator
-- **Tell/told for AI oracle**: coordinator's emergency handler calls `ask_ai` if AI is configured (tell rule `analyze(_)` allows the query; told rules filter the response)
-- Logger receives `log_event` → ontology-aware matching works
+- **Learning**: learns overheating pattern
+- **Present event**: blackboard → thermostat gets `update_temp(85)`
+- **On_change**: "Cooling mode just activated" (edge-triggered, fires once)
+- **Triggered internal**: `cooling_monitor` starts firing (mode=cooling)
+- **Constraint violated**: 85 > 50 → emergency sent to coordinator
+- **Change condition**: thermostat's `startup_diagnostic` counter resets (current_temp changed)
+- **Priority queue**: coordinator processes `emergency(200)` before `sensor_data(30)`
+- Logger receives log_event → **ontology** matching works
 
 ```bash
-# STEP 2: Send second temperature reading (triggers learned pattern + multi-event)
+# STEP 2: Send second reading (triggers learned pattern + multi-event + export past)
 curl -X POST http://localhost:8080/api/send \
   -H "Content-Type: application/json" \
   -d '{"to":"sensor","content":"read_temp(90)"}'
 ```
 
 **Expected:**
-- Sensor detects previously learned overheating pattern: "WARNING: Previously learned overheating pattern!"
-- Sensor sends `alert(repeated_overheating, 90)` to coordinator
-- Coordinator receives both `sensor_data` and `alert`
-- **Multi-event fires**: "All events occurred" → "MULTI-EVENT: Both sensor data and alert received!"
-- Coordinator tracks alert count in beliefs
+- **Learned knowledge**: "WARNING: Previously learned overheating pattern!"
+- **Multi-event**: `sensor_data` + `alert` both in past → fires
+- **Export past (on_past)**: `alert` + `sensor_data` consumed from past memory
 
 ```bash
-# STEP 3: Check all state via APIs
-curl http://localhost:8080/api/learned?agent=sensor
-curl http://localhost:8080/api/goals?agent=sensor
-curl http://localhost:8080/api/goals?agent=coordinator
-curl http://localhost:8080/api/beliefs?agent=thermostat
-curl http://localhost:8080/api/beliefs?agent=coordinator
-curl http://localhost:8080/api/blackboard
-curl http://localhost:8080/api/past?agent=coordinator
+# STEP 3: Test FIPA confirm — coordinator sends confirm to worker
+curl -X POST http://localhost:8080/api/inject \
+  -H "Content-Type: application/json" \
+  -d '{"agent":"coordinator","event":"send_confirm(system_ok)"}'
 ```
 
+**Expected:** Worker receives `confirm(system_ok)` → "Fact confirmed: system_ok" + "FIPA CONFIRM received"
+
 ```bash
-# STEP 4: Test tell/told filtering — send an unaccepted message to coordinator
+# STEP 4: Test FIPA query_ref — coordinator queries worker's beliefs
+curl -X POST http://localhost:8080/api/inject \
+  -H "Content-Type: application/json" \
+  -d '{"agent":"coordinator","event":"query_worker(status(_))"}'
+```
+
+**Expected:** Worker auto-responds with `inform(query_ref(status(_)), values([status(ready)]))` → coordinator logs "FIPA QUERY_REF response"
+
+```bash
+# STEP 5: Test FIPA proposals — coordinator proposes to worker
+curl -X POST http://localhost:8080/api/inject \
+  -H "Content-Type: application/json" \
+  -d '{"agent":"coordinator","event":"request_analysis(sample_data)}"'
+```
+
+**Expected:** Worker accepts → executes `analyze(sample_data)` → sends `inform(analysis_result, complete)` back → coordinator logs "FIPA PROPOSAL ACCEPTED"
+
+```bash
+# STEP 6: Test rejected proposal
+curl -X POST http://localhost:8080/api/inject \
+  -H "Content-Type: application/json" \
+  -d '{"agent":"coordinator","event":"test_reject"}'
+```
+
+**Expected:** Worker rejects `impossible_task` → coordinator logs "FIPA PROPOSAL REJECTED"
+
+```bash
+# STEP 7: Test export past not_done
+curl -X POST http://localhost:8080/api/inject \
+  -H "Content-Type: application/json" \
+  -d '{"agent":"coordinator","event":"critical_data(important_backup)"}'
+```
+
+**Expected:** "EXPORT PAST NOT_DONE: backup NOT done! critical_data(important_backup) needs attention!"
+
+```bash
+# STEP 8: Test residue goals
+curl -X POST http://localhost:8080/api/inject \
+  -H "Content-Type: application/json" \
+  -d '{"agent":"coordinator","event":"start_residue_test"}'
+# Wait 2 seconds, then inject the resolution:
+curl -X POST http://localhost:8080/api/inject \
+  -H "Content-Type: application/json" \
+  -d '{"agent":"coordinator","event":"residue_resolved"}'
+```
+
+**Expected:** "Goal queued as residue: has_past(residue_resolved)" → then "Residue goal achieved" after injection
+
+```bash
+# STEP 9: Test tell/told filtering — send an unaccepted message
 curl -X POST http://localhost:8080/api/send \
   -H "Content-Type: application/json" \
   -d '{"to":"coordinator","content":"unknown_message(test)"}'
 ```
 
-**Expected:** "Message rejected by told rule: unknown_message(test)"
+**Expected:** Message rejected by told rule (coordinator only accepts defined patterns)
 
 ```bash
-# STEP 5: Lower temperature to see constraint resolve
+# STEP 10: Lower temperature — constraint resolves, change condition resets diagnostic
 curl -X POST http://localhost:8080/api/send \
   -H "Content-Type: application/json" \
   -d '{"to":"thermostat","content":"update_temp(20)"}'
 ```
 
-**Expected:** Temperature drops to 20, constraint no longer violated, mode goes to idle.
+**Expected:** Temperature drops to 20, constraint no longer violated, mode goes to idle, `startup_diagnostic` counter resets (change detected)
+
+```bash
+# STEP 11: Check all state via APIs
+curl http://localhost:8080/api/agents
+curl http://localhost:8080/api/beliefs?agent=thermostat
+curl http://localhost:8080/api/beliefs?agent=coordinator
+curl http://localhost:8080/api/beliefs?agent=worker
+curl http://localhost:8080/api/past?agent=coordinator
+curl http://localhost:8080/api/learned?agent=sensor
+curl http://localhost:8080/api/goals?agent=sensor
+curl http://localhost:8080/api/blackboard
+```
 
 ---
 

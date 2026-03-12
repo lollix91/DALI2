@@ -30,6 +30,14 @@
     agent_ontology/2,
     agent_learn_rule/4,
     agent_goal/4,
+    agent_past_lifetime/3,
+    agent_remember_lifetime/3,
+    agent_remember_limit/4,
+    agent_past_reaction/3,
+    agent_past_done_reaction/4,
+    agent_past_not_done_reaction/4,
+    agent_ontology_file/2,
+    agent_on_proposal/3,
     clear_definitions/0
 ]).
 
@@ -53,6 +61,14 @@
 :- dynamic agent_ontology/2.         % agent_ontology(Name, Declaration)
 :- dynamic agent_learn_rule/4.       % agent_learn_rule(Name, Event, Outcome, Body)
 :- dynamic agent_goal/4.             % agent_goal(Name, Type, Goal, Plan)
+:- dynamic agent_past_lifetime/3.    % agent_past_lifetime(Name, Pattern, Duration)
+:- dynamic agent_remember_lifetime/3. % agent_remember_lifetime(Name, Pattern, Duration)
+:- dynamic agent_remember_limit/4.   % agent_remember_limit(Name, Pattern, N, Mode)
+:- dynamic agent_past_reaction/3.    % agent_past_reaction(Name, EventList, Body)
+:- dynamic agent_past_done_reaction/4. % agent_past_done_reaction(Name, Action, EventList, Body)
+:- dynamic agent_past_not_done_reaction/4. % agent_past_not_done_reaction(Name, Action, EventList, Body)
+:- dynamic agent_ontology_file/2.    % agent_ontology_file(Name, File)
+:- dynamic agent_on_proposal/3.      % agent_on_proposal(Name, ActionPattern, Body)
 
 %% clear_definitions/0 - Remove all loaded definitions
 clear_definitions :-
@@ -72,7 +88,15 @@ clear_definitions :-
     retractall(agent_constraint(_, _, _)),
     retractall(agent_ontology(_, _)),
     retractall(agent_learn_rule(_, _, _, _)),
-    retractall(agent_goal(_, _, _, _)).
+    retractall(agent_goal(_, _, _, _)),
+    retractall(agent_past_lifetime(_, _, _)),
+    retractall(agent_remember_lifetime(_, _, _)),
+    retractall(agent_remember_limit(_, _, _, _)),
+    retractall(agent_past_reaction(_, _, _)),
+    retractall(agent_past_done_reaction(_, _, _, _)),
+    retractall(agent_past_not_done_reaction(_, _, _, _)),
+    retractall(agent_ontology_file(_, _)),
+    retractall(agent_on_proposal(_, _, _)).
 
 %% load_agents(+File) - Load agent definitions from a file
 load_agents(File) :-
@@ -263,6 +287,38 @@ process_term(Name:goal(Type, Goal)) :- !,
 % Directives (other :- terms) - execute them
 process_term(:- Goal) :- !,
     catch(call(Goal), _, true).
+
+% Past lifetime: Name:past_lifetime(Pattern, Duration).
+process_term(Name:past_lifetime(Pattern, Duration)) :- !,
+    assert(agent_past_lifetime(Name, Pattern, Duration)).
+
+% Remember lifetime: Name:remember_lifetime(Pattern, Duration).
+process_term(Name:remember_lifetime(Pattern, Duration)) :- !,
+    assert(agent_remember_lifetime(Name, Pattern, Duration)).
+
+% Remember limit: Name:remember_limit(Pattern, N, Mode).
+process_term(Name:remember_limit(Pattern, N, Mode)) :- !,
+    assert(agent_remember_limit(Name, Pattern, N, Mode)).
+
+% Export past reaction (~/): Name:on_past(EventList) :- Body.
+process_term((Name:on_past(EventList) :- Body)) :- !,
+    assert(agent_past_reaction(Name, EventList, Body)).
+
+% Export past done (?/): Name:on_past_done(Action, EventList) :- Body.
+process_term((Name:on_past_done(Action, EventList) :- Body)) :- !,
+    assert(agent_past_done_reaction(Name, Action, EventList, Body)).
+
+% Export past not done (</): Name:on_past_not_done(Action, EventList) :- Body.
+process_term((Name:on_past_not_done(Action, EventList) :- Body)) :- !,
+    assert(agent_past_not_done_reaction(Name, Action, EventList, Body)).
+
+% Ontology file: Name:ontology_file(File).
+process_term(Name:ontology_file(File)) :- !,
+    assert(agent_ontology_file(Name, File)).
+
+% On proposal handler: Name:on_proposal(Action) :- Body.
+process_term((Name:on_proposal(Action) :- Body)) :- !,
+    assert(agent_on_proposal(Name, Action, Body)).
 
 % Standalone facts/rules (without agent prefix) - skip with warning
 process_term(Term) :-

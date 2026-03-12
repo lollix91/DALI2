@@ -15,6 +15,11 @@ Complete reference for the DALI2 agent-oriented programming language.
 - [Constraints (`constraint`)](#constraints)
 - [Goals (`goal`)](#goals)
 - [Tell/Told Communication Filtering](#telltold-communication-filtering)
+- [FIPA Message Types](#fipa-message-types)
+- [Action Proposals (`on_proposal`)](#action-proposals)
+- [Past Event Lifetime & Remember](#past-event-lifetime--remember)
+- [Export Past Rules (`on_past`)](#export-past-rules)
+- [Residue Goals](#residue-goals)
 - [Ontology Declarations (`ontology`)](#ontology-declarations)
 - [Learning Rules (`learn_from`)](#learning-rules)
 - [Actions (`do`)](#actions)
@@ -102,6 +107,8 @@ agent:internal(Event, Options).                     %% body = true
 | `times(N)` | Fire at most N times total |
 | `until(Condition)` | Fire until Condition becomes true |
 | `trigger(Condition)` | Fire only when Condition is true (start condition) |
+| `interval(N)` | Fire at most once every N seconds (per-event frequency) |
+| `change([FactList])` | Reset `times(N)` counter when any listed fact/past event changes |
 | `between(time(H1,M1), time(H2,M2))` | Fire only during a time window (hours:minutes) |
 | `between(date(Y1,Mo1,D1), date(Y2,Mo2,D2))` | Fire only during a date range |
 
@@ -147,7 +154,20 @@ thermostat:internal(cooling_monitor, [forever, trigger(believes(mode(cooling)))]
 robot:internal(charge_check, [times(10), trigger(believes(battery_low))]) :-
     log("Battery low! Checking charge level..."),
     do(check_battery).
+
+%% Fire every 5 seconds (not every cycle)
+monitor:internal(slow_check, [forever, interval(5)]) :-
+    log("Slow check (every 5 seconds)").
+
+%% Fire 3 times, but reset counter when temperature belief changes
+sensor:internal(temp_report, [times(3), change([temperature(_)])]) :-
+    believes(temperature(T)),
+    log("Temperature report: ~w", [T]).
 ```
+
+The `interval(N)` option mirrors DALI's per-event time period (`internal_event/5` Arg 2). Without it, internal events fire every cycle.
+
+The `change([FactList])` option mirrors DALI's change condition (`internal_event/5` Arg 4). When any belief or past event in the list changes, the `times(N)` counter resets to zero, allowing the event to fire again.
 
 Each internal event is tracked: the engine counts how many times it has fired and records each firing in past memory as `internal(Event)`.
 
@@ -369,6 +389,8 @@ agent:told(Pattern, Priority).         %% accept with priority (numeric)
 
 If an agent has **any** `told` rules, only messages matching at least one `told` pattern are accepted. Messages not matching are rejected with a log entry. If an agent has **no** `told` rules, all messages are accepted (backward compatible).
 
+**Priority Queue**: When an agent has `told` rules with priority values, incoming messages are **sorted by priority** (highest first) before processing. This mirrors DALI's priority-based message queue.
+
 ### Tell (send filter)
 
 Defines which message patterns an agent is allowed to send.
@@ -419,6 +441,220 @@ advisor:on(critical_event(Data)) :-
 
 ---
 
+## FIPA Message Types
+
+DALI2 supports FIPA-ACL message types for structured inter-agent communication. FIPA types are sent as regular messages but have special semantics on the receiving side.
+
+**Supported FIPA types:**
+
+| Type | Syntax | Receiver Semantics |
+|------|--------|--------------------|
+| `inform(Content)` | `send(To, inform(Content))` | Normal handler + past record |
+| `inform(Content, Meta)` | `send(To, inform(Content, Meta))` | Normal handler + past record |
+| `confirm(Fact)` | `send(To, confirm(Fact))` | Records `confirmed(Fact)` as past event |
+| `disconfirm(Fact)` | `send(To, disconfirm(Fact))` | Removes `confirmed(Fact)` from past |
+| `propose(Action)` | `send(To, propose(Action))` | Fires `on_proposal` handler |
+| `accept_proposal(Action)` | `send(To, accept_proposal(A))` | Normal handler |
+| `reject_proposal(Action)` | `send(To, reject_proposal(A))` | Normal handler |
+| `query_ref(Query)` | `send(To, query_ref(Query))` | Auto-responds with matching beliefs |
+| `agree(Content)` | `send(To, agree(Content))` | Normal handler |
+| `refuse(Content)` | `send(To, refuse(Content))` | Normal handler |
+| `failure(Action, Reason)` | `send(To, failure(A, R))` | Normal handler |
+| `cancel(Action)` | `send(To, cancel(Action))` | Normal handler |
+
+**Special semantics:**
+
+- **`confirm(Fact)`**: The receiver records `confirmed(Fact)` as a past event. Check with `has_confirmed(Fact)`.
+- **`disconfirm(Fact)`**: The receiver removes `confirmed(Fact)` from past events.
+- **`query_ref(Query)`**: The receiver automatically responds with `inform(query_ref(Query), values(Results))` containing all matching beliefs.
+- **`propose(Action)`**: Fires any `on_proposal(Action)` handlers (see [Action Proposals](#action-proposals)).
+
+**Examples:**
+
+```prolog
+%% Confirm a fact to another agent
+sensor:on(measurement_complete(Data)) :-
+    send(coordinator, confirm(measurement(Data))).
+
+%% Query another agent's beliefs
+coordinator:on(need_status) :-
+    send(sensor, query_ref(status(_))).
+
+%% Handle the query response
+coordinator:on(inform(query_ref(Q), values(V))) :-
+    log("Query ~w returned: ~w", [Q, V]).
+```
+
+---
+
+## Action Proposals
+
+The proposal mechanism enables negotiation between agents using FIPA propose/accept/reject.
+
+**Syntax:**
+
+```prolog
+agent:on_proposal(ActionPattern) :- Body.
+```
+
+When an agent receives a `propose(Action)` message, all matching `on_proposal` handlers fire. Inside the handler, `from(Sender)` retrieves the proposer, and `accept_proposal(To, Action)` or `reject_proposal(To, Action)` send the response.
+
+**Examples:**
+
+```prolog
+%% Worker handles proposals
+worker:on_proposal(task(T)) :-
+    believes(available),
+    from(Sender),
+    log("Accepting task ~w from ~w", [T, Sender]),
+    accept_proposal(Sender, task(T)),
+    do(task(T)).
+
+worker:on_proposal(task(T)) :-
+    not(believes(available)),
+    from(Sender),
+    reject_proposal(Sender, task(T)).
+
+%% Coordinator sends a proposal
+coordinator:on(new_job(J)) :-
+    send(worker, propose(task(J))).
+
+%% Coordinator handles response
+coordinator:on(accept_proposal(task(T))) :-
+    log("Worker accepted: ~w", [T]).
+coordinator:on(reject_proposal(task(T))) :-
+    log("Worker rejected: ~w", [T]).
+```
+
+---
+
+## Past Event Lifetime & Remember
+
+Control how long past events are kept in memory. Mirrors DALI's `past_event/2` and `remember_event/2`.
+
+### Past Lifetime
+
+```prolog
+agent:past_lifetime(Pattern, Duration).
+```
+
+When a past event matching `Pattern` exceeds `Duration` seconds, it is moved to the **remember** tier (if a remember lifetime exists) or deleted.
+
+| Duration | Meaning |
+|----------|----------|
+| Number (seconds) | Expire after N seconds |
+| `forever` | Never expire |
+
+### Remember Lifetime
+
+```prolog
+agent:remember_lifetime(Pattern, Duration).
+```
+
+Expired past events move to the remember tier. When a remember event exceeds its own `Duration`, it is permanently deleted.
+
+### Remember Limit
+
+```prolog
+agent:remember_limit(Pattern, N, Mode).
+```
+
+Keep only `N` remember events matching `Pattern`. `Mode` is `last` (keep newest) or `first` (keep oldest).
+
+**Examples:**
+
+```prolog
+%% Sensor readings expire after 60 seconds, then remembered for 1 hour
+sensor:past_lifetime(sensor_reading(_), 60).
+sensor:remember_lifetime(sensor_reading(_), 3600).
+sensor:remember_limit(sensor_reading(_), 100, last).
+
+%% Alarms never expire from past
+sensor:past_lifetime(alarm(_), forever).
+
+%% Temporary data expires after 10 seconds, no remember
+worker:past_lifetime(temp_data(_), 10).
+```
+
+**DSL predicates:**
+- `has_remember(Event)` — check if event is in remember tier
+- `has_remember(Event, Time)` — check with timestamp
+- `has_confirmed(Fact)` — check if fact was confirmed via FIPA
+
+---
+
+## Export Past Rules
+
+Reactive rules that fire when past event patterns match, **consuming** (deleting) the matched past events. Mirrors DALI's `~/`, `</`, `?/` operators.
+
+### on_past (~/)
+
+Fires when all listed events exist in past memory, then consumes them.
+
+```prolog
+agent:on_past([Pattern1, Pattern2, ...]) :- Body.
+```
+
+### on_past_done (?/)
+
+Fires only if the action WAS done (exists in past as `did(Action)`) and all listed events exist.
+
+```prolog
+agent:on_past_done(ActionPattern, [Pattern1, ...]) :- Body.
+```
+
+### on_past_not_done (</)
+
+Fires only if the action was NOT done and all listed events exist.
+
+```prolog
+agent:on_past_not_done(ActionPattern, [Pattern1, ...]) :- Body.
+```
+
+**Examples:**
+
+```prolog
+%% When both alert and reading exist, consume and react
+monitor:on_past([alert(Type), reading(Value)]) :-
+    log("Alert ~w with reading ~w", [Type, Value]),
+    send(coordinator, combined_report(Type, Value)).
+
+%% React only if cleanup was done
+manager:on_past_done(cleanup(_), [old_data(X)]) :-
+    log("Cleanup done, old data ~w consumed", [X]).
+
+%% Warn if backup was NOT done but critical data exists
+manager:on_past_not_done(backup(_), [critical_data(X)]) :-
+    log("WARNING: backup not done, critical data ~w!", [X]),
+    send(admin, urgent_backup(X)).
+```
+
+The matched past events are **consumed** (removed from past memory) when the rule fires. This prevents the rule from firing again with the same events.
+
+---
+
+## Residue Goals
+
+When `achieve(Goal)` is called in a rule body but the goal condition is not yet satisfiable, the goal is queued as a **residue**. Residue goals are automatically retried each cycle until the condition becomes true.
+
+This mirrors DALI's `residue_goal` / `tenta_residuo` mechanism.
+
+```prolog
+%% The achieve call queues the goal as residue if not immediately satisfiable
+agent:on(start_task) :-
+    achieve(has_past(data_ready)).
+
+%% Later, when data_ready is injected, the residue goal resolves automatically
+```
+
+**Lifecycle:**
+1. `achieve(Goal)` is called — if `Goal` is true, it's immediately achieved
+2. If `Goal` is not yet true, it's queued as a **residue goal**
+3. Each cycle, all residue goals are re-checked
+4. When the condition becomes true, the goal is marked `achieved` and removed from residue
+
+---
+
 ## Ontology Declarations
 
 Define semantic equivalences between terms. Ontology declarations make event matching, belief checking, and condition evaluation aware of synonyms and equivalences.
@@ -446,6 +682,26 @@ agent:ontology(symmetric(near)).
 - `on(temp(30))` will match an incoming event `temperature(30)` if `eq_property(temperature, temp)` is declared
 - `on(near(a, b))` will match an incoming event `near(b, a)` if `symmetric(near)` is declared
 - Use `onto_match(T1, T2)` in rule bodies to explicitly check ontology equivalence
+
+### Ontology File Loading
+
+Load ontology declarations from an external Prolog file:
+
+```prolog
+agent:ontology_file('path/to/ontology.pl').
+```
+
+The file should contain `same_as/2`, `eq_property/2`, `eq_class/2`, and/or `symmetric/1` facts:
+
+```prolog
+%% ontology.pl
+same_as(temperature, temp).
+eq_property(location, position).
+eq_class(sensor, detector).
+symmetric(connected_to).
+```
+
+Ontology files are loaded when the agent starts. This mirrors DALI's OWL/external ontology support with a simpler Prolog-native format.
 
 ---
 
@@ -586,6 +842,10 @@ These predicates are available inside rule bodies:
 |-----------|-------------|
 | `send(Agent, Content)` | Send a message to another agent (filtered by tell/told) |
 | `broadcast(Content)` | Send to all other agents |
+| `from(Sender)` | Get sender of current message (use in handlers/proposals) |
+| `reply_to(Content)` | Reply to current message sender |
+| `accept_proposal(To, Action)` | Send accept\_proposal FIPA message |
+| `reject_proposal(To, Action)` | Send reject\_proposal FIPA message |
 
 ### Logging
 
@@ -608,6 +868,9 @@ These predicates are available inside rule bodies:
 |-----------|-------------|
 | `has_past(Event)` | Check if event is in past memory |
 | `has_past(Event, Time)` | Check past with timestamp |
+| `has_remember(Event)` | Check if event is in remember tier |
+| `has_remember(Event, Time)` | Check remember with timestamp |
+| `has_confirmed(Fact)` | Check if fact was confirmed via FIPA confirm |
 
 ### Actions & Helpers
 
@@ -634,7 +897,7 @@ These predicates are available inside rule bodies:
 
 | Predicate | Description |
 |-----------|-------------|
-| `achieve(Goal)` | Manually trigger an achieve goal |
+| `achieve(Goal)` | Trigger achieve goal (queued as residue if not satisfiable) |
 | `reset_goal(Goal)` | Reset a goal for re-attempt |
 
 ### Blackboard
@@ -669,17 +932,19 @@ Each agent runs as a thread with a cycle-based event loop:
 ┌─────────────────────────────────────────┐
 │              Agent Cycle                │
 ├─────────────────────────────────────────┤
-│  1. Process incoming messages (on)      │
-│  2. Process injected events (on)        │
-│  3. Process internal events (internal)  │
-│  4. Process periodic tasks (every)      │
-│  5. Process condition monitors (when)   │
-│  6. Process condition-actions (on_change)│
-│  7. Process present events (on_present) │
-│  8. Process multi-events (on_all)       │
-│  9. Check constraints (constraint)      │
-│ 10. Process goals (goal)                │
-│ 11. Sleep for cycle duration            │
+│  1. Process messages (priority queue)   │
+│  2. Process injected events             │
+│  3. Process internals (interval/change) │
+│  4. Process periodic tasks              │
+│  5. Process condition monitors          │
+│  6. Process condition-actions           │
+│  7. Process present events              │
+│  8. Process multi-events                │
+│  9. Process past reactions (on_past)    │
+│ 10. Check constraints                   │
+│ 11. Process goals + residue goals       │
+│ 12. Clean up expired past events        │
+│ 13. Sleep for cycle duration            │
 │     └─── repeat ───┘                    │
 └─────────────────────────────────────────┘
 ```
@@ -692,6 +957,9 @@ Every event is recorded in past memory with a timestamp and source type:
 - `internal(Event)` — internal event that fired
 - `did(Action)` — action that was executed
 - `goal_achieved(Goal)` — goal that was achieved
+- `confirmed(Fact)` — fact confirmed via FIPA confirm
+
+Past events can have **lifetimes** (via `past_lifetime`) and move to a **remember** tier when they expire.
 
 ---
 
@@ -700,8 +968,9 @@ Every event is recorded in past memory with a timestamp and source type:
 | Feature | DALI 1.0 (SICStus) | DALI2 (SWI-Prolog) |
 |---------|---------------------|---------------------|
 | External event | `eventE(X) :> body.` | `agent:on(event(X)) :- body.` |
-| Internal event | `internal_event(ev, 3, forever, true, until_cond(past(ev)))` | `agent:internal(ev, [forever]) :- body.` |
+| Internal event | `internal_event(ev, 3, forever, true, until_cond(past(ev)))` | `agent:internal(ev, [forever, interval(3)]) :- body.` |
 | Internal with time | `internal_event(ev, 3, forever, true, in_date(D1, D2))` | `agent:internal(ev, [between(time(H1,M1), time(H2,M2))]) :- body.` |
+| Internal change cond | `internal_event(ev, 3, 5, change([fact]), forever)` | `agent:internal(ev, [times(5), change([fact])]) :- body.` |
 | Condition-action | `cond(X) :< action(X).` | `agent:on_change(cond(X)) :- action(X).` |
 | Present event | `en(event)` with suffix N | `agent:on_present(condition) :- body.` |
 | Multiple events | `mul([eve, event1, event2])` | `agent:on_all([event1, event2]) :- body.` |
@@ -709,10 +978,19 @@ Every event is recorded in past memory with a timestamp and source type:
 | Told rule | `told(_, inform(_), 70) :- true.` | `agent:told(inform(_), 70).` |
 | Tell rule | `tell(_, _, send_message(_)) :- true.` | `agent:tell(send_message(_)).` |
 | Send message | `messageA(dest, send_message(ev(X), Me))` | `send(dest, ev(X))` |
+| FIPA confirm | `a(message(Ag, confirm(X, A)))` | `send(Ag, confirm(X))` |
+| FIPA query_ref | `call_query_ref(X, N, Ag)` | `send(Ag, query_ref(X))` |
+| FIPA propose | `a(message(Ag, propose(A, C, Me)))` | `send(Ag, propose(A))` |
 | Past check | `evp(event)` / `clause(past(event,_,_),_)` | `has_past(event)` |
+| Past lifetime | `past_event(event, 60)` | `agent:past_lifetime(event, 60).` |
+| Remember | `remember_event(event, 3600)` | `agent:remember_lifetime(event, 3600).` |
+| Export past (~/) | `head ~/ body` | `agent:on_past([events]) :- body.` |
+| Export past (</) | `head </ body` | `agent:on_past_not_done(action, [events]) :- body.` |
+| Export past (?/) | `head ?/ body` | `agent:on_past_done(action, [events]) :- body.` |
+| Residue goal | `tenta_residuo(goal)` | `achieve(goal)` (auto-residue) |
 | Belief check | `clause(isa(fact,_,_),_)` | `believes(fact)` |
 | Obtaining goal | `obt_goal(goal)` | `agent:goal(achieve, goal) :- plan.` |
 | Test goal | `test_goal(goal)` | `agent:goal(test, goal) :- plan.` |
-| Ontology | `meta/3` with OWL, `eq_property`, `same_as` | `agent:ontology(same_as(a, b)).` |
+| Ontology | `meta/3` with OWL, `eq_property`, `same_as` | `agent:ontology(same_as(a, b)).` + `agent:ontology_file('file.pl').` |
 | Learning | `learning.pl` + `learning_constraints.pl` | `agent:learn_from(event, outcome) :- condition.` |
 | Action | Suffix A: `actionA(X) :- body.` | `agent:do(action(X)) :- body.` |

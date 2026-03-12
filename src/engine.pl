@@ -53,6 +53,11 @@
 :- dynamic agent_multi_fired/2.        % agent_multi_fired(Name, MultiId)
 :- dynamic agent_learned_rt/3.         % agent_learned_rt(Name, Pattern, Outcome)
 :- dynamic agent_goal_status/3.        % agent_goal_status(Name, GoalId, Status)
+:- dynamic agent_last_internal_fire/3. % agent_last_internal_fire(Name, InternalId, LastTime)
+:- dynamic agent_internal_snapshot/3.  % agent_internal_snapshot(Name, InternalId, Snapshot)
+:- dynamic agent_remember/4.           % agent_remember(Name, Event, Timestamp, Source)
+:- dynamic agent_current_sender/2.     % agent_current_sender(Name, Sender) - set during msg processing
+:- dynamic agent_residue_goal/3.       % agent_residue_goal(Name, GoalId, Goal)
 
 %% ============================================================
 %% PUBLIC API
@@ -84,6 +89,8 @@ start_agent(Name) :-
         forall(loader:agent_belief(Name, Fact),
             assert(agent_belief_rt(Name, Fact))
         ),
+        % Load ontology files
+        load_agent_ontology_files(Name),
         atom_concat('agent_', Name, ThreadId),
         thread_create(agent_loop(Name, Options), _Tid,
             [alias(ThreadId), detached(false)]),
@@ -153,11 +160,11 @@ agent_loop(Name, Options) :-
 
 agent_loop_inner(Name, Options) :-
     (agent_running(Name) ->
-        % 1. Process incoming messages (external events)
+        % 1. Process incoming messages (with priority ordering)
         process_messages(Name),
         % 2. Process injected events
         process_injected_events(Name),
-        % 3. Process internal events (proactive)
+        % 3. Process internal events (with interval, change, trigger)
         process_internals(Name),
         % 4. Process periodic tasks
         process_periodics(Name),
@@ -169,11 +176,16 @@ agent_loop_inner(Name, Options) :-
         process_present_events(Name),
         % 8. Process multi-events
         process_multi_events(Name),
-        % 9. Check constraints
+        % 9. Process past reactions (export past rules)
+        process_past_reactions(Name),
+        % 10. Check constraints
         process_constraints(Name),
-        % 10. Process goals
+        % 11. Process goals (with residue)
         process_goals(Name),
-        % 11. Sleep for cycle duration
+        process_residue_goals(Name),
+        % 12. Clean up expired past events
+        process_past_lifetime(Name),
+        % 13. Sleep for cycle duration
         get_cycle_ms(Options, SleepMs),
         SleepSec is SleepMs / 1000,
         sleep(SleepSec),
@@ -194,22 +206,81 @@ get_cycle_ms(Options, Ms) :-
 %% EVENT PROCESSING
 %% ============================================================
 
-%% process_messages(+Name) - Receive and process all pending messages
+%% process_messages(+Name) - Receive, prioritize, and process all pending messages
 process_messages(Name) :-
     communication:receive_all(Name, Messages),
-    process_message_list(Name, Messages).
+    prioritize_messages(Name, Messages, Sorted),
+    process_message_list(Name, Sorted).
+
+%% prioritize_messages(+Name, +Messages, -Sorted) - Sort by told priority (highest first)
+prioritize_messages(Name, Messages, Sorted) :-
+    assign_priorities(Name, Messages, Prioritized),
+    sort(1, @>=, Prioritized, SortedPairs),
+    pairs_values(SortedPairs, Sorted).
+
+assign_priorities(_, [], []).
+assign_priorities(Name, [Msg|Rest], [P-Msg|PRest]) :-
+    Msg = message(_, Content, _),
+    (loader:agent_told(Name, Pattern, Priority),
+     subsumes_term(Pattern, Content) ->
+        P = Priority
+    ;
+        P = 0
+    ),
+    assign_priorities(Name, Rest, PRest).
 
 process_message_list(_, []).
 process_message_list(Name, [message(From, Content, T) | Rest]) :-
     (should_allow_receive(Name, Content, _Priority) ->
         log_agent(Name, "Received from ~w: ~w", [From, Content]),
         record_past(Name, received(Content, From), T),
+        % Set current sender for use in handlers (e.g. on_proposal)
+        retractall(agent_current_sender(Name, _)),
+        assert(agent_current_sender(Name, From)),
+        % Handle FIPA message semantics
+        handle_fipa_semantics(Name, From, Content, T),
         fire_handlers(Name, Content),
-        fire_learning(Name, Content)
+        fire_learning(Name, Content),
+        retractall(agent_current_sender(Name, _))
     ;
         log_agent(Name, "Message rejected by told rule: ~w from ~w", [Content, From])
     ),
     process_message_list(Name, Rest).
+
+%% handle_fipa_semantics(+Name, +From, +Content, +T) - FIPA message type special handling
+handle_fipa_semantics(Name, _From, confirm(Fact), T) :- !,
+    record_past(Name, confirmed(Fact), T),
+    log_agent(Name, "Fact confirmed: ~w", [Fact]).
+
+handle_fipa_semantics(Name, _From, disconfirm(Fact), _T) :- !,
+    retractall(agent_past_event(Name, confirmed(Fact), _, _)),
+    log_agent(Name, "Fact disconfirmed: ~w", [Fact]).
+
+handle_fipa_semantics(Name, From, query_ref(Query), _T) :- !,
+    findall(Query, agent_belief_rt(Name, Query), Results),
+    communication:send(Name, From, inform(query_ref(Query), values(Results))),
+    log_agent(Name, "Query_ref response to ~w: ~w", [From, Results]).
+
+handle_fipa_semantics(Name, From, propose(Action), _T) :- !,
+    fire_proposal_handlers(Name, From, Action).
+
+handle_fipa_semantics(_, _, _, _).  % Other FIPA types: no special semantics
+
+%% fire_proposal_handlers(+Name, +From, +Action) - Fire on_proposal handlers
+fire_proposal_handlers(Name, From, Action) :-
+    forall(
+        loader:agent_on_proposal(Name, Pattern, Body),
+        (copy_term(Pattern-Body, ActionCopy-BodyCopy),
+         (ActionCopy = Action ->
+            retractall(agent_current_sender(Name, _)),
+            assert(agent_current_sender(Name, From)),
+            catch(
+                execute_body(Name, BodyCopy),
+                Error,
+                log_agent(Name, "Proposal handler error: ~w", [Error])
+            )
+         ; true))
+    ).
 
 %% process_injected_events(+Name) - Process events from the inject queue
 process_injected_events(Name) :-
@@ -309,11 +380,16 @@ process_internals(Name) :-
 
 process_single_internal(Name, Event, Options, Body, Now) :-
     term_to_atom(Event, InternalId),
+    % Handle change condition (reset counter if monitored facts changed)
+    process_change_condition(Name, InternalId, Options),
     (should_fire_internal(Name, InternalId, Options, Now) ->
         catch(
             (copy_term(Event-Body, _ECopy-BodyCopy),
              execute_body(Name, BodyCopy),
              increment_internal_count(Name, InternalId),
+             % Record fire time for interval tracking
+             retractall(agent_last_internal_fire(Name, InternalId, _)),
+             assert(agent_last_internal_fire(Name, InternalId, Now)),
              get_time(Stamp), T is truncate(Stamp * 1000),
              record_past(Name, internal(Event), T),
              fire_learning(Name, Event)),
@@ -321,6 +397,40 @@ process_single_internal(Name, Event, Options, Body, Now) :-
             log_agent(Name, "Internal event error: ~w", [Error])
         )
     ; true).
+
+%% process_change_condition(+Name, +Id, +Options) - Reset counter if monitored facts changed
+process_change_condition(Name, InternalId, Options) :-
+    (member(change(FactList), Options) ->
+        get_fact_snapshot(Name, FactList, CurrentSnapshot),
+        (agent_internal_snapshot(Name, InternalId, OldSnapshot) ->
+            (CurrentSnapshot \== OldSnapshot ->
+                retractall(agent_internal_count(Name, InternalId, _)),
+                retractall(agent_internal_snapshot(Name, InternalId, _)),
+                assert(agent_internal_snapshot(Name, InternalId, CurrentSnapshot)),
+                log_agent(Name, "Change detected for ~w, counter reset", [InternalId])
+            ;
+                true
+            )
+        ;
+            assert(agent_internal_snapshot(Name, InternalId, CurrentSnapshot))
+        )
+    ;
+        true
+    ).
+
+get_fact_snapshot(Name, FactList, Snapshot) :-
+    maplist(get_single_fact_value(Name), FactList, Snapshot).
+
+get_single_fact_value(Name, Fact, Value) :-
+    (agent_belief_rt(Name, Fact) ->
+        Value = present(Fact)
+    ;
+        (agent_past_event(Name, Fact, T, _) ->
+            Value = past(Fact, T)
+        ;
+            Value = absent(Fact)
+        )
+    ).
 
 should_fire_internal(Name, InternalId, Options, Now) :-
     (Options = [] -> true ;
@@ -352,6 +462,18 @@ check_single_internal_opt(_, _, between(time(H1,M1), time(H2,M2)), Now) :-
 
 check_single_internal_opt(Name, _, trigger(Condition), _) :-
     catch(call_condition(Name, Condition), _, fail).
+
+check_single_internal_opt(Name, Id, interval(Seconds), _Now) :-
+    (agent_last_internal_fire(Name, Id, LastFire) ->
+        get_time(Now2),
+        Elapsed is Now2 - LastFire,
+        Elapsed >= Seconds
+    ;
+        true  % first time, allow
+    ).
+
+% change option is handled separately in process_change_condition, always passes here
+check_single_internal_opt(_, _, change(_), _).
 
 check_single_internal_opt(_, _, between(date(Y1,Mo1,D1), date(Y2,Mo2,D2)), Now) :-
     stamp_date_time(Now, DateTime, local),
@@ -776,6 +898,38 @@ execute_body(Name, ask_ai(Context, SystemPrompt, Result)) :- !,
 execute_body(_, ai_available) :- !,
     ai_oracle:ai_available.
 
+% from(Sender) - Get the sender of the current message being processed
+execute_body(Name, from(Sender)) :- !,
+    agent_current_sender(Name, Sender).
+
+% has_remember(Event) - Check if event is in remember tier
+execute_body(Name, has_remember(Event)) :- !,
+    agent_remember(Name, Event, _, _).
+
+% has_remember(Event, Time) - Check remember with time
+execute_body(Name, has_remember(Event, Time)) :- !,
+    agent_remember(Name, Event, Time, _).
+
+% has_confirmed(Fact) - Check if a fact was confirmed via FIPA confirm
+execute_body(Name, has_confirmed(Fact)) :- !,
+    agent_past_event(Name, confirmed(Fact), _, _).
+
+% accept_proposal(To, Action) - Send accept_proposal FIPA message
+execute_body(Name, accept_proposal(To, Action)) :- !,
+    execute_body(Name, send(To, accept_proposal(Action))).
+
+% reject_proposal(To, Action) - Send reject_proposal FIPA message
+execute_body(Name, reject_proposal(To, Action)) :- !,
+    execute_body(Name, send(To, reject_proposal(Action))).
+
+% reply_to(Content) - Reply to the current message sender
+execute_body(Name, reply_to(Content)) :- !,
+    (agent_current_sender(Name, Sender) ->
+        execute_body(Name, send(Sender, Content))
+    ;
+        log_agent(Name, "reply_to failed: no current sender")
+    ).
+
 % learn(Pattern, Outcome) - Record a learned association
 execute_body(Name, learn(Pattern, Outcome)) :- !,
     assert(agent_learned_rt(Name, Pattern, Outcome)),
@@ -794,9 +948,28 @@ execute_body(Name, forget(Pattern)) :- !,
 execute_body(Name, onto_match(Term1, Term2)) :- !,
     ontology_match(Name, Term1, Term2).
 
-% achieve(Goal) - Manually trigger an achieve goal
+% achieve(Goal) - Manually trigger an achieve goal (with residue tracking)
 execute_body(Name, achieve(Goal)) :- !,
-    process_single_goal(Name, achieve, Goal, true).
+    goal_canonical_id(Goal, GoalId),
+    (agent_goal_status(Name, GoalId, achieved) ->
+        true
+    ;
+        (catch(call_condition(Name, Goal), _, fail) ->
+            retractall(agent_goal_status(Name, GoalId, _)),
+            assert(agent_goal_status(Name, GoalId, achieved)),
+            retractall(agent_residue_goal(Name, GoalId, _)),
+            log_agent(Name, "Inline goal achieved: ~w", [Goal]),
+            get_time(Stamp), T is truncate(Stamp * 1000),
+            record_past(Name, goal_achieved(Goal), T)
+        ;
+            (agent_residue_goal(Name, GoalId, _) ->
+                true
+            ;
+                assert(agent_residue_goal(Name, GoalId, Goal)),
+                log_agent(Name, "Goal queued as residue: ~w", [Goal])
+            )
+        )
+    ).
 
 % reset_goal(Goal) - Reset a goal so it can be re-attempted
 execute_body(Name, reset_goal(Goal)) :- !,
@@ -899,6 +1072,10 @@ call_condition(Name, learned(Pattern, Outcome)) :- !,
     agent_learned_rt(Name, Pattern, Outcome).
 call_condition(Name, onto_match(T1, T2)) :- !,
     ontology_match(Name, T1, T2).
+call_condition(Name, has_remember(Event)) :- !,
+    agent_remember(Name, Event, _, _).
+call_condition(Name, has_confirmed(Fact)) :- !,
+    agent_past_event(Name, confirmed(Fact), _, _).
 call_condition(_Name, bb_read(Pattern)) :- !,
     blackboard:bb_get(Pattern).
 call_condition(_, Cond) :-
@@ -910,6 +1087,278 @@ call_condition(_, Cond) :-
 
 record_past(Name, Event, Timestamp) :-
     assert(agent_past_event(Name, Event, Timestamp, runtime)).
+
+%% ============================================================
+%% PAST EVENT LIFETIME & REMEMBER (Feature 2)
+%% ============================================================
+
+%% process_past_lifetime(+Name) - Expire past events and enforce remember limits
+process_past_lifetime(Name) :-
+    get_time(Now),
+    NowMs is truncate(Now * 1000),
+    % Check past events for expiration
+    findall(pe(Ev, T, S), agent_past_event(Name, Ev, T, S), PastList),
+    check_past_expirations(Name, PastList, NowMs),
+    % Check remember events for expiration
+    findall(re(Ev, T, S), agent_remember(Name, Ev, T, S), RemList),
+    check_remember_expirations(Name, RemList, NowMs),
+    % Enforce remember limits
+    enforce_remember_limits(Name).
+
+check_past_expirations(_, [], _).
+check_past_expirations(Name, [pe(Ev, T, S)|Rest], NowMs) :-
+    check_single_past_expiration(Name, Ev, T, S, NowMs),
+    check_past_expirations(Name, Rest, NowMs).
+
+check_single_past_expiration(Name, Ev, T, S, NowMs) :-
+    unwrap_event_content(Ev, Content),
+    (find_matching_lifetime(Name, Content, past, Duration) ->
+        (Duration == forever ->
+            true
+        ;
+            number(Duration),
+            DurationMs is Duration * 1000,
+            Age is NowMs - T,
+            (Age > DurationMs ->
+                retract(agent_past_event(Name, Ev, T, S)),
+                % Move to remember if remember_lifetime exists
+                (find_matching_lifetime(Name, Content, remember, _) ->
+                    assert(agent_remember(Name, Ev, T, S))
+                ;
+                    true
+                )
+            ;
+                true
+            )
+        )
+    ;
+        true  % no lifetime rule = keep forever
+    ).
+
+check_remember_expirations(_, [], _).
+check_remember_expirations(Name, [re(Ev, T, S)|Rest], NowMs) :-
+    check_single_remember_expiration(Name, Ev, T, S, NowMs),
+    check_remember_expirations(Name, Rest, NowMs).
+
+check_single_remember_expiration(Name, Ev, T, S, NowMs) :-
+    unwrap_event_content(Ev, Content),
+    (find_matching_lifetime(Name, Content, remember, Duration) ->
+        (Duration == forever ->
+            true
+        ;
+            number(Duration),
+            DurationMs is Duration * 1000,
+            Age is NowMs - T,
+            (Age > DurationMs ->
+                retract(agent_remember(Name, Ev, T, S))
+            ;
+                true
+            )
+        )
+    ;
+        true
+    ).
+
+%% find_matching_lifetime(+Name, +Content, +Type, -Duration)
+find_matching_lifetime(Name, Content, past, Duration) :-
+    loader:agent_past_lifetime(Name, Pattern, Duration),
+    subsumes_term(Pattern, Content), !.
+find_matching_lifetime(Name, Content, remember, Duration) :-
+    loader:agent_remember_lifetime(Name, Pattern, Duration),
+    subsumes_term(Pattern, Content), !.
+
+%% unwrap_event_content(+WrappedEvent, -Content)
+unwrap_event_content(received(C, _), C) :- !.
+unwrap_event_content(injected(C), C) :- !.
+unwrap_event_content(internal(C), C) :- !.
+unwrap_event_content(confirmed(C), C) :- !.
+unwrap_event_content(did(C), C) :- !.
+unwrap_event_content(goal_achieved(C), C) :- !.
+unwrap_event_content(C, C).
+
+%% enforce_remember_limits(+Name) - Keep only N remember events per pattern
+enforce_remember_limits(Name) :-
+    forall(
+        loader:agent_remember_limit(Name, Pattern, N, Mode),
+        enforce_single_limit(Name, Pattern, N, Mode)
+    ).
+
+enforce_single_limit(Name, Pattern, N, Mode) :-
+    findall(re(Ev, T, S),
+        (agent_remember(Name, Ev, T, S), unwrap_event_content(Ev, C), subsumes_term(Pattern, C)),
+        All),
+    length(All, Len),
+    (Len > N ->
+        (Mode == last ->
+            sort(2, @=<, All, Sorted),  % oldest first
+            Remove is Len - N,
+            take_n(Sorted, Remove, ToRemove)
+        ;
+            sort(2, @>=, All, Sorted),  % newest first
+            Remove is Len - N,
+            take_n(Sorted, Remove, ToRemove)
+        ),
+        remove_remember_entries(Name, ToRemove)
+    ;
+        true
+    ).
+
+take_n(_, 0, []) :- !.
+take_n([], _, []) :- !.
+take_n([H|T], N, [H|R]) :- N > 0, N1 is N - 1, take_n(T, N1, R).
+
+remove_remember_entries(_, []).
+remove_remember_entries(Name, [re(Ev, T, S)|Rest]) :-
+    retract(agent_remember(Name, Ev, T, S)),
+    remove_remember_entries(Name, Rest).
+
+%% ============================================================
+%% PAST REACTIONS - Export Past Rules (Feature 5)
+%% ============================================================
+
+%% process_past_reactions(+Name) - Fire rules when past event patterns match, consuming them
+process_past_reactions(Name) :-
+    process_past_basic(Name),
+    process_past_done(Name),
+    process_past_not_done(Name).
+
+%% on_past: when all listed past events exist, consume and fire body
+process_past_basic(Name) :-
+    forall(
+        loader:agent_past_reaction(Name, EventList, Body),
+        try_past_reaction(Name, EventList, Body)
+    ).
+
+try_past_reaction(Name, EventList, Body) :-
+    copy_term(EventList-Body, EL-B),
+    (find_all_matching_past(Name, EL, Matches) ->
+        consume_past_matches(Name, Matches),
+        log_agent(Name, "Past reaction fired, consumed: ~w", [EL]),
+        catch(
+            execute_body(Name, B),
+            Error,
+            log_agent(Name, "Past reaction error: ~w", [Error])
+        )
+    ;
+        true
+    ).
+
+%% on_past_done: fire only if action WAS done and past events match
+process_past_done(Name) :-
+    forall(
+        loader:agent_past_done_reaction(Name, Action, EventList, Body),
+        try_past_done_reaction(Name, Action, EventList, Body)
+    ).
+
+try_past_done_reaction(Name, Action, EventList, Body) :-
+    copy_term(Action-EventList-Body, A-EL-B),
+    (agent_past_event(Name, did(DidA), _, _), subsumes_term(A, DidA),
+     find_all_matching_past(Name, EL, Matches) ->
+        consume_past_matches(Name, Matches),
+        log_agent(Name, "Past done reaction fired for ~w", [A]),
+        catch(execute_body(Name, B), Error,
+            log_agent(Name, "Past done reaction error: ~w", [Error]))
+    ;
+        true
+    ).
+
+%% on_past_not_done: fire only if action was NOT done and past events match
+process_past_not_done(Name) :-
+    forall(
+        loader:agent_past_not_done_reaction(Name, Action, EventList, Body),
+        try_past_not_done_reaction(Name, Action, EventList, Body)
+    ).
+
+try_past_not_done_reaction(Name, Action, EventList, Body) :-
+    copy_term(Action-EventList-Body, A-EL-B),
+    (\+ (agent_past_event(Name, did(DidA), _, _), subsumes_term(A, DidA)),
+     find_all_matching_past(Name, EL, Matches) ->
+        consume_past_matches(Name, Matches),
+        log_agent(Name, "Past not_done reaction fired (action ~w not done)", [A]),
+        catch(execute_body(Name, B), Error,
+            log_agent(Name, "Past not_done reaction error: ~w", [Error]))
+    ;
+        true
+    ).
+
+%% find_all_matching_past(+Name, +PatternList, -Matches)
+find_all_matching_past(_, [], []).
+find_all_matching_past(Name, [Pattern|Rest], [match(Key, T, S)|Matches]) :-
+    agent_past_event(Name, Key, T, S),
+    unwrap_event_content(Key, Content),
+    Pattern = Content,
+    find_all_matching_past(Name, Rest, Matches).
+
+%% consume_past_matches(+Name, +Matches)
+consume_past_matches(_, []).
+consume_past_matches(Name, [match(Key, T, S)|Rest]) :-
+    (retract(agent_past_event(Name, Key, T, S)) -> true ; true),
+    consume_past_matches(Name, Rest).
+
+%% ============================================================
+%% RESIDUE GOALS (Feature 6)
+%% ============================================================
+
+%% process_residue_goals(+Name) - Retry goals that are queued as residue
+process_residue_goals(Name) :-
+    findall(rg(GoalId, Goal), agent_residue_goal(Name, GoalId, Goal), Residues),
+    process_residue_list(Name, Residues).
+
+process_residue_list(_, []).
+process_residue_list(Name, [rg(GoalId, Goal)|Rest]) :-
+    (catch(call_condition(Name, Goal), _, fail) ->
+        retractall(agent_residue_goal(Name, GoalId, _)),
+        retractall(agent_goal_status(Name, GoalId, _)),
+        assert(agent_goal_status(Name, GoalId, achieved)),
+        log_agent(Name, "Residue goal achieved: ~w", [Goal]),
+        get_time(Stamp), T is truncate(Stamp * 1000),
+        record_past(Name, goal_achieved(Goal), T)
+    ;
+        true  % still pending, retry next cycle
+    ),
+    process_residue_list(Name, Rest).
+
+%% ============================================================
+%% ONTOLOGY FILE LOADING (Feature 10)
+%% ============================================================
+
+%% load_agent_ontology_files(+Name) - Load ontology declarations from files
+load_agent_ontology_files(Name) :-
+    forall(
+        loader:agent_ontology_file(Name, File),
+        load_ontology_file(Name, File)
+    ).
+
+load_ontology_file(Name, File) :-
+    (exists_file(File) ->
+        setup_call_cleanup(
+            open(File, read, Stream, []),
+            read_ontology_terms(Name, Stream),
+            close(Stream)
+        ),
+        log_agent(Name, "Loaded ontology file: ~w", [File])
+    ;
+        log_agent(Name, "WARNING: Ontology file not found: ~w", [File])
+    ).
+
+read_ontology_terms(Name, Stream) :-
+    read_term(Stream, Term, []),
+    (Term == end_of_file ->
+        true
+    ;
+        (process_ontology_term(Name, Term) -> true ; true),
+        read_ontology_terms(Name, Stream)
+    ).
+
+process_ontology_term(Name, same_as(A, B)) :- !,
+    assert(loader:agent_ontology(Name, same_as(A, B))).
+process_ontology_term(Name, eq_property(A, B)) :- !,
+    assert(loader:agent_ontology(Name, eq_property(A, B))).
+process_ontology_term(Name, eq_class(A, B)) :- !,
+    assert(loader:agent_ontology(Name, eq_class(A, B))).
+process_ontology_term(Name, symmetric(R)) :- !,
+    assert(loader:agent_ontology(Name, symmetric(R))).
+process_ontology_term(_, _).  % ignore unknown terms
 
 %% ============================================================
 %% LOGGING
