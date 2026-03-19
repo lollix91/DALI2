@@ -80,7 +80,7 @@
             <div class="card" id="ai-card">
                 <h3>AI Oracle <span id="ai-status-badge" class="badge badge-off">OFF</span></h3>
                 <div class="form-group">
-                    <label for="ai-key-input">OpenAI API Key</label>
+                    <label for="ai-key-input">OpenRouter API Key</label>
                     <div class="input-row">
                         <input type="password" id="ai-key-input" placeholder="sk-..." spellcheck="false">
                         <button id="btn-set-key" class="btn btn-small">Set</button>
@@ -89,10 +89,10 @@
                 <div class="form-group">
                     <label for="ai-model-select">Model</label>
                     <select id="ai-model-select">
-                        <option value="gpt-4o-mini">gpt-4o-mini</option>
-                        <option value="gpt-4o">gpt-4o</option>
-                        <option value="gpt-4-turbo">gpt-4-turbo</option>
-                        <option value="gpt-3.5-turbo">gpt-3.5-turbo</option>
+                        <option value="openai/gpt-4o-mini">openai/gpt-4o-mini</option>
+                        <option value="openai/gpt-4o">openai/gpt-4o</option>
+                        <option value="anthropic/claude-3.5-sonnet">anthropic/claude-3.5-sonnet</option>
+                        <option value="google/gemini-2.0-flash-001">google/gemini-2.0-flash</option>
                     </select>
                 </div>
                 <div class="form-group">

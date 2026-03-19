@@ -32,40 +32,40 @@ DALI2 uses **identical syntax** to the original DALI — no prefix needed. Each 
 | Residue goal | `tenta_residuo(goal)` |
 | Belief | `believes(fact).` or bare fact |
 
-**New DALI2 features** (no DALI equivalent, marked with **[NEW]**):
-- `every(Seconds, Goal).` — periodic tasks **[NEW]**
-- `when(Condition) :- Body.` — condition monitors **[NEW]**
-- `helper(Head) :- Body.` — utility predicates **[NEW]**
-- `on_proposal(Action) :- Body.` — action proposal handlers **[NEW]**
-- `learn_from(Event, Outcome) :- Body.` — learning rules **[NEW]**
-- `ontology(same_as(a, b)).` — inline ontology **[NEW]**
-- `ontology_file('file.pl').` — external ontology file **[NEW]**
-- `ask_ai(Context, Result)` — AI Oracle integration (body predicate) **[NEW]**
-- `bb_read/bb_write/bb_remove` — Redis blackboard operations (body predicates) **[NEW]**
+**Additional features** (no DALI equivalent):
+- `every(Seconds, Goal).` — periodic tasks
+- `when(Condition) :- Body.` — condition monitors
+- `helper(Head) :- Body.` — utility predicates
+- `on_proposal(Action) :- Body.` — action proposal handlers
+- `learn_from(Event, Outcome) :- Body.` — learning rules
+- `ontology(same_as(a, b)).` — inline ontology
+- `ontology_file('file.pl').` — external ontology file
+- `ask_ai(Context, Result)` — AI Oracle integration (body predicate)
+- `bb_read/bb_write/bb_remove` — Redis blackboard operations (body predicates)
 
 ## Table of Contents
 
 - [Agent Declaration](#agent-declaration)
-- [Reactive Rules (`:>` / `on`)](#reactive-rules)
-- [Internal Events (`:>` + `I` suffix / `internal`)](#internal-events)
-- [Periodic Tasks (`every`)](#periodic-tasks) **[NEW]**
-- [Condition Monitors (`when`)](#condition-monitors) **[NEW]**
-- [Condition-Action Rules (`:<` / `on_change`)](#condition-action-rules)
-- [Present/Environment Events (`N` suffix / `on_present`)](#presentenvironment-events)
-- [Multi-Events (conjunction / `on_all`)](#multi-events)
-- [Constraints (`:~` / `constraint`)](#constraints)
-- [Goals (`obt_goal`/`test_goal` / `goal`)](#goals)
+- [Reactive Rules (`:>`)](#reactive-rules)
+- [Internal Events (`:>` + `I` suffix)](#internal-events)
+- [Periodic Tasks (`every`)](#periodic-tasks)
+- [Condition Monitors (`when`)](#condition-monitors)
+- [Condition-Action Rules (`:<`)](#condition-action-rules)
+- [Present/Environment Events (`N` suffix)](#presentenvironment-events)
+- [Multi-Events (conjunction)](#multi-events)
+- [Constraints (`:~`)](#constraints)
+- [Goals (`obt_goal`/`test_goal`)](#goals)
 - [Tell/Told Communication Filtering](#telltold-communication-filtering)
 - [FIPA Message Types](#fipa-message-types)
-- [Action Proposals (`on_proposal`)](#action-proposals) **[NEW]**
+- [Action Proposals (`on_proposal`)](#action-proposals)
 - [Past Event Lifetime & Remember](#past-event-lifetime--remember)
-- [Export Past Rules (`~/` `</` `?/` / `on_past`)](#export-past-rules)
+- [Export Past Rules (`~/` `</` `?/`)](#export-past-rules)
 - [Residue Goals](#residue-goals)
-- [Ontology Declarations (`ontology`)](#ontology-declarations) **[NEW]**
-- [Learning Rules (`learn_from`)](#learning-rules) **[NEW]**
-- [Actions (`A` suffix / `do`)](#actions)
+- [Ontology Declarations (`ontology`)](#ontology-declarations)
+- [Learning Rules (`learn_from`)](#learning-rules)
+- [Actions (`A` suffix)](#actions)
 - [Beliefs (`believes`)](#beliefs)
-- [Helpers (`helper`)](#helpers) **[NEW]**
+- [Helpers (`helper`)](#helpers)
 - [DSL Predicates Reference](#dsl-predicates-reference)
 - [Agent Lifecycle](#agent-lifecycle)
 
@@ -99,19 +99,13 @@ All agents in a single `.pl` file share the same file. Each rule is prefixed wit
 
 React to external events (messages from other agents or injected events).
 
-**Syntax (DALI — primary):**
+**Syntax:**
 
 ```prolog
 eventE(Args) :> Body.
 ```
 
 The `E` suffix marks external events. The `:>` operator separates the head from the body. The suffix is stripped when matching incoming events (e.g., `readingE(V)` matches incoming event `reading(V)`).
-
-**Alternative syntax (also supported):**
-
-```prolog
-agent:on(EventPattern) :- Body.
-```
 
 **Examples:**
 
@@ -142,7 +136,7 @@ When a message arrives, the engine matches it against all handlers for the recei
 
 Proactive events that fire automatically based on conditions.
 
-**Syntax (DALI — primary):**
+**Syntax:**
 
 ```prolog
 eventI(Args) :> Body.                                          %% handler
@@ -150,14 +144,6 @@ internal_event(Event, Period, Repetition, StartCond, StopCond). %% configuration
 ```
 
 The `I` suffix marks internal events. The handler (`:>`) defines what to execute, and `internal_event/5` configures timing and conditions.
-
-**Alternative syntax (also supported):**
-
-```prolog
-agent:internal(Event) :- Body.                     %% forever (default)
-agent:internal(Event, Options) :- Body.             %% with conditions
-agent:internal(Event, Options).                     %% body = true
-```
 
 **Options** (can be a single option or a list):
 
@@ -205,32 +191,6 @@ work_hours_checkI :>
 internal_event(work_hours_check, 10, forever, true, in_date(time(9,0), time(17,0))).
 ```
 
-**Examples (alternative syntax):**
-
-```prolog
-%% Fire forever (every cycle)
-monitor:internal(heartbeat) :-
-    log("Agent is alive").
-
-%% Fire at most 3 times
-greeter:internal(say_hello, times(3)) :-
-    log("Hello!").
-
-%% Fire only when a condition holds
-thermostat:internal(cooling_monitor, [forever, trigger(believes(mode(cooling)))]) :-
-    believes(current_temp(T)),
-    log("Monitoring cooling, temp: ~w", [T]).
-
-%% Fire every 5 seconds (not every cycle)
-monitor:internal(slow_check, [forever, interval(5)]) :-
-    log("Slow check (every 5 seconds)").
-
-%% Fire 3 times, reset counter when temperature changes
-sensor:internal(temp_report, [times(3), change([temperature(_)])]) :-
-    believes(temperature(T)),
-    log("Temperature report: ~w", [T]).
-```
-
 The `interval(N)` option mirrors DALI's per-event time period (`internal_event/5` Arg 2). Without it, internal events fire every cycle.
 
 The `change([FactList])` option mirrors DALI's change condition (`internal_event/5` Arg 4). When any belief or past event in the list changes, the `times(N)` counter resets to zero, allowing the event to fire again.
@@ -241,7 +201,7 @@ Each internal event is tracked: the engine counts how many times it has fired an
 
 ## Periodic Tasks
 
-Run a task at fixed time intervals. **[NEW in DALI2]**
+Run a task at fixed time intervals.
 
 **Syntax:**
 
@@ -301,16 +261,10 @@ when(has_past(intrusion_detected)) :-
 
 **Edge-triggered**: fires exactly once when a condition transitions from false to true. Does not fire again until the condition becomes false and then true again.
 
-**Syntax (DALI — primary):**
+**Syntax:**
 
 ```prolog
 Condition :< Action.
-```
-
-**Alternative syntax (also supported):**
-
-```prolog
-agent:on_change(Condition) :- Body.
 ```
 
 **Examples:**
@@ -335,7 +289,7 @@ believes(battery_level(L)), L < 20 :< (
 
 **Difference from `when`:**
 - `when` fires **every cycle** while the condition is true (level-triggered)
-- `:<` / `on_change` fires **once** when the condition becomes true (edge-triggered), then waits for it to become false before it can fire again
+- `:<` fires **once** when the condition becomes true (edge-triggered), then waits for it to become false before it can fire again
 
 ---
 
@@ -343,7 +297,7 @@ believes(battery_level(L)), L < 20 :< (
 
 Monitor the environment (blackboard, external state) every cycle. Similar to `when` but semantically represents observations from the agent's environment rather than internal reasoning.
 
-**Syntax (DALI — primary, for belief conditions):**
+**Syntax:**
 
 ```prolog
 conditionN(Args) :- Body.
@@ -351,24 +305,9 @@ conditionN(Args) :- Body.
 
 The `N` suffix marks present events. The condition is evaluated each cycle; if true, the body fires.
 
-**Syntax (for blackboard/complex conditions):**
-
-```prolog
-agent:on_present(Condition) :- Body.
-```
-
-> **Note:** The `N` suffix works for belief-based conditions. For blackboard monitoring (`bb_read`), use the `on_present` form with agent prefix.
-
 **Examples:**
 
 ```prolog
-:- agent(sensor, [cycle(2)]).
-
-%% Monitor blackboard for external data (on_present form needed for bb_read)
-sensor:on_present(bb_read(environment(temp, T))) :-
-    log("Environment temperature: ~w", [T]),
-    send(thermostat, update_temp(T)).
-
 :- agent(robot, [cycle(1)]).
 
 %% React to a belief representing an observable state (N suffix)
@@ -381,16 +320,10 @@ obstacle_aheadN :- do(turn_around).
 
 Fire when **all** listed events have occurred in the agent's past memory. The body fires once when all events are present; it resets if any event is removed from the past.
 
-**Syntax (DALI — primary):**
+**Syntax:**
 
 ```prolog
 event1E(Args), event2E(Args) :> Body.
-```
-
-**Alternative syntax (also supported):**
-
-```prolog
-agent:on_all([Event1, Event2, ...]) :- Body.
 ```
 
 **Examples:**
@@ -412,18 +345,11 @@ The engine checks past events (received, injected, and internal) for matches. Ea
 
 Invariant conditions that are checked every cycle. If a constraint is violated (condition is false), the handler body executes.
 
-**Syntax (DALI — primary):**
+**Syntax:**
 
 ```prolog
 :~ Condition :- HandlerBody.     %% with handler
 :~ Condition.                     %% log-only (no handler)
-```
-
-**Alternative syntax (also supported):**
-
-```prolog
-agent:constraint(Condition) :- HandlerBody.
-agent:constraint(Condition).
 ```
 
 **Examples:**
@@ -453,18 +379,11 @@ Goal-directed behavior. Two types:
 - **`achieve`** (`obt_goal`): keep trying the plan every cycle until the goal condition is met
 - **`test`** (`test_goal`): try the plan once, record whether the goal succeeded or failed
 
-**Syntax (DALI — primary):**
+**Syntax:**
 
 ```prolog
 obt_goal(GoalCondition) :- Plan.    %% achieve goal
 test_goal(GoalCondition) :- Plan.   %% test goal
-```
-
-**Alternative syntax (also supported):**
-
-```prolog
-agent:goal(achieve, GoalCondition) :- Plan.
-agent:goal(test, GoalCondition) :- Plan.
 ```
 
 **Examples:**
@@ -500,17 +419,10 @@ Control which messages an agent can send and receive. Mirrors DALI's `communicat
 
 Defines which message patterns an agent is willing to accept.
 
-**Syntax (DALI — primary, `communication.con` style):**
+**Syntax:**
 
 ```prolog
 told(_, Pattern, Priority) :- true.    %% accept with priority (numeric)
-```
-
-**Alternative syntax (also supported):**
-
-```prolog
-agent:told(Pattern, Priority).         %% accept with priority
-agent:told(Pattern).                   %% accept, default priority 0
 ```
 
 If an agent has **any** `told` rules, only messages matching at least one `told` pattern are accepted. Messages not matching are rejected with a log entry. If an agent has **no** `told` rules, all messages are accepted (backward compatible).
@@ -521,16 +433,10 @@ If an agent has **any** `told` rules, only messages matching at least one `told`
 
 Defines which message patterns an agent is allowed to send.
 
-**Syntax (DALI — primary):**
+**Syntax:**
 
 ```prolog
 tell(_, _, Pattern) :- true.           %% allowed to send Pattern
-```
-
-**Alternative syntax (also supported):**
-
-```prolog
-agent:tell(Pattern).                   %% allowed to send Pattern
 ```
 
 If an agent has **any** `tell` rules, only messages matching at least one `tell` pattern can be sent. Others are blocked. If an agent has **no** `tell` rules, all messages are allowed.
@@ -615,7 +521,7 @@ informE(query_ref(Q), values(V)) :>
 
 ## Action Proposals
 
-The proposal mechanism enables negotiation between agents using FIPA propose/accept/reject. **[NEW in DALI2]**
+The proposal mechanism enables negotiation between agents using FIPA propose/accept/reject.
 
 **Syntax:**
 
@@ -663,13 +569,11 @@ Control how long past events are kept in memory. Mirrors DALI's `past_event/2` a
 
 ### Past Lifetime
 
-**Syntax (DALI — primary):**
+**Syntax:**
 
 ```prolog
 past_event(Pattern, Duration).
 ```
-
-**Alternative syntax:** `agent:past_lifetime(Pattern, Duration).`
 
 When a past event matching `Pattern` exceeds `Duration` seconds, it is moved to the **remember** tier (if a remember lifetime exists) or deleted.
 
@@ -680,25 +584,21 @@ When a past event matching `Pattern` exceeds `Duration` seconds, it is moved to 
 
 ### Remember Lifetime
 
-**Syntax (DALI — primary):**
+**Syntax:**
 
 ```prolog
 remember_event(Pattern, Duration).
 ```
 
-**Alternative syntax:** `agent:remember_lifetime(Pattern, Duration).`
-
 Expired past events move to the remember tier. When a remember event exceeds its own `Duration`, it is permanently deleted.
 
 ### Remember Limit
 
-**Syntax (DALI — primary):**
+**Syntax:**
 
 ```prolog
 remember_event_mod(Pattern, number(N), Mode).
 ```
-
-**Alternative syntax:** `agent:remember_limit(Pattern, N, Mode).`
 
 Keep only `N` remember events matching `Pattern`. `Mode` is `last` (keep newest) or `first` (keep oldest).
 
@@ -731,37 +631,31 @@ Reactive rules that fire when past event patterns match, **consuming** (deleting
 
 Fires when all listed events exist in past memory, then consumes them.
 
-**Syntax (DALI — primary):**
+**Syntax:**
 
 ```prolog
 Action ~/ past_event1, past_event2.
 ```
 
-**Alternative syntax:** `agent:on_past([Pattern1, Pattern2, ...]) :- Body.`
-
 ### Export Past Done (?/ operator)
 
 Fires only if the action WAS done (exists in past as `did(Action)`) and all listed events exist.
 
-**Syntax (DALI — primary):**
+**Syntax:**
 
 ```prolog
 Action ?/ past_event1, past_event2.
 ```
 
-**Alternative syntax:** `agent:on_past_done(ActionPattern, [Pattern1, ...]) :- Body.`
-
 ### Export Past NOT Done (</ operator)
 
 Fires only if the action was NOT done and all listed events exist.
 
-**Syntax (DALI — primary):**
+**Syntax:**
 
 ```prolog
 Action </ past_event1, past_event2.
 ```
-
-**Alternative syntax:** `agent:on_past_not_done(ActionPattern, [Pattern1, ...]) :- Body.`
 
 **Examples:**
 
@@ -808,7 +702,7 @@ start_residue_testE :>
 
 ## Ontology Declarations
 
-Define semantic equivalences between terms. **[NEW in DALI2]** — replaces DALI's OWL/`meta/3` ontology with a simpler Prolog-native format. Ontology declarations make event matching, belief checking, and condition evaluation aware of synonyms and equivalences.
+Define semantic equivalences between terms. Replaces DALI's OWL/`meta/3` ontology with a simpler Prolog-native format. Ontology declarations make event matching, belief checking, and condition evaluation aware of synonyms and equivalences.
 
 **Syntax:**
 
@@ -859,7 +753,7 @@ Ontology files are loaded when the agent starts.
 
 ## Learning Rules
 
-Agents can learn from experience. **[NEW in DALI2]** Learning rules are triggered when matching events occur. Learned associations are stored and can be queried later.
+Agents can learn from experience. Learning rules are triggered when matching events occur. Learned associations are stored and can be queried later.
 
 **Syntax:**
 
@@ -907,19 +801,13 @@ read_tempE(T) :>
 
 Named, reusable actions. Actions are recorded in past memory as `did(Action)`.
 
-**Syntax (DALI — primary):**
+**Syntax:**
 
 ```prolog
 actionA(Args) :- Body.
 ```
 
 The `A` suffix marks action definitions.
-
-**Alternative syntax (also supported):**
-
-```prolog
-agent:do(ActionPattern) :- Body.
-```
 
 **Examples:**
 
@@ -971,7 +859,7 @@ believes(mode(idle)).
 
 ## Helpers
 
-Utility predicates that can be called from rule bodies. **[NEW in DALI2]**
+Utility predicates that can be called from rule bodies.
 
 **Syntax:**
 
@@ -1123,38 +1011,38 @@ Past events can have **lifetimes** (via `past_event/2`) and move to a **remember
 
 ---
 
-## DALI Syntax in DALI2
+## DALI Syntax Comparison
 
-DALI2 uses the **same syntax** as the original DALI. No agent prefix is needed — use `:- agent(name).` to set context. Both DALI and alternative DALI2 syntax are accepted by the loader.
+DALI2 uses the **same syntax** as the original DALI. No agent prefix is needed — use `:- agent(name).` to set context.
 
-| Feature | DALI (SICStus) | DALI2 (SWI-Prolog) — primary | Alternative syntax |
-|---------|----------------|------------------------------|--------------------|
-| External event | `eventE(X) :> body.` | `eventE(X) :> body.` | `agent:on(event(X)) :- body.` |
-| Internal event | `eventI :> body.` + `internal_event/5` | `eventI :> body.` + `internal_event/5` | `agent:internal(ev, [opts]) :- body.` |
-| Condition-action | `cond :< action.` | `cond :< action.` | `agent:on_change(cond) :- action.` |
-| Present event | `condN :- body.` | `condN :- body.` | `agent:on_present(cond) :- body.` |
-| Multi-events | `ev1E, ev2E :> body.` | `ev1E, ev2E :> body.` | `agent:on_all([ev1, ev2]) :- body.` |
-| Constraint | `:~ constraint.` | `:~ constraint.` | `agent:constraint(cond) :- handler.` |
-| Export past (~/) | `head ~/ past1, past2.` | `head ~/ past1, past2.` | `agent:on_past([events]) :- body.` |
-| Export past (</) | `head </ past1, past2.` | `head </ past1, past2.` | `agent:on_past_not_done(action, [events]) :- body.` |
-| Export past (?/) | `head ?/ past1, past2.` | `head ?/ past1, past2.` | `agent:on_past_done(action, [events]) :- body.` |
-| Action definition | `actionA(X) :- body.` | `actionA(X) :- body.` | `agent:do(action(X)) :- body.` |
-| Obtain goal | `obt_goal(goal) :- plan.` | `obt_goal(goal) :- plan.` | `agent:goal(achieve, goal) :- plan.` |
-| Test goal | `test_goal(goal) :- plan.` | `test_goal(goal) :- plan.` | `agent:goal(test, goal) :- plan.` |
-| Past lifetime | `past_event(ev, 60).` | `past_event(ev, 60).` | `agent:past_lifetime(ev, 60).` |
-| Remember | `remember_event(ev, 3600).` | `remember_event(ev, 3600).` | `agent:remember_lifetime(ev, 3600).` |
-| Remember limit | `remember_event_mod(ev, number(5), last).` | `remember_event_mod(ev, number(5), last).` | `agent:remember_limit(ev, 5, last).` |
-| Told | `told(_, pattern, pri) :- true.` | `told(_, pattern, pri) :- true.` | `agent:told(pattern, priority).` |
-| Tell | `tell(_, _, pattern) :- true.` | `tell(_, _, pattern) :- true.` | `agent:tell(pattern).` |
-| Send message | `messageA(dest, send_message(content, Me))` | Same (in body) | `send(dest, content)` |
-| Past check | `evp(event)` / `eventP(args)` | Same (in body) | `has_past(event)` |
-| Residue goal | `tenta_residuo(goal)` | Same (in body) | `achieve(goal)` |
-| Belief check | `clause(isa(fact,_,_),_)` | Same (in body) | `believes(fact)` |
-| Ontology | `meta/3` + OWL | `ontology(same_as(a,b)).` **[NEW]** | — |
-| Learning | — | `learn_from(event, outcome) :- cond.` **[NEW]** | — |
-| Periodic | — | `every(seconds, goal).` **[NEW]** | — |
-| Condition monitor | — | `when(condition) :- body.` **[NEW]** | — |
-| Helper | — | `helper(head) :- body.` **[NEW]** | — |
-| Proposal handler | — | `on_proposal(action) :- body.` **[NEW]** | — |
-| AI Oracle | — | `ask_ai(context, result)` (in body) **[NEW]** | — |
-| Blackboard | Linda (TCP) | `bb_read`/`bb_write`/`bb_remove` (in body) **[NEW]** | — |
+| Feature | DALI (SICStus) | DALI2 (SWI-Prolog) |
+|---------|----------------|---------------------|
+| External event | `eventE(X) :> body.` | `eventE(X) :> body.` (identical) |
+| Internal event | `eventI :> body.` + `internal_event/5` | `eventI :> body.` + `internal_event/5` (identical) |
+| Condition-action | `cond :< action.` | `cond :< action.` (identical) |
+| Present event | `condN :- body.` | `condN :- body.` (identical) |
+| Multi-events | `ev1E, ev2E :> body.` | `ev1E, ev2E :> body.` (identical) |
+| Constraint | `:~ constraint.` | `:~ constraint.` (identical) |
+| Export past (~/) | `head ~/ past1, past2.` | `head ~/ past1, past2.` (identical) |
+| Export past (</) | `head </ past1, past2.` | `head </ past1, past2.` (identical) |
+| Export past (?/) | `head ?/ past1, past2.` | `head ?/ past1, past2.` (identical) |
+| Action definition | `actionA(X) :- body.` | `actionA(X) :- body.` (identical) |
+| Obtain goal | `obt_goal(goal) :- plan.` | `obt_goal(goal) :- plan.` (identical) |
+| Test goal | `test_goal(goal) :- plan.` | `test_goal(goal) :- plan.` (identical) |
+| Past lifetime | `past_event(ev, 60).` | `past_event(ev, 60).` (identical) |
+| Remember | `remember_event(ev, 3600).` | `remember_event(ev, 3600).` (identical) |
+| Remember limit | `remember_event_mod(ev, number(5), last).` | `remember_event_mod(ev, number(5), last).` (identical) |
+| Told | `told(_, pattern, pri) :- true.` | `told(_, pattern, pri) :- true.` (identical) |
+| Tell | `tell(_, _, pattern) :- true.` | `tell(_, _, pattern) :- true.` (identical) |
+| Send message | `messageA(dest, send_message(content, Me))` | Same, or `send(dest, content)` |
+| Past check | `evp(event)` / `eventP(args)` | Same, or `has_past(event)` |
+| Residue goal | `tenta_residuo(goal)` | Same, or `achieve(goal)` |
+| Belief check | `clause(isa(fact,_,_),_)` | Same, or `believes(fact)` |
+| Ontology | `meta/3` + OWL | `ontology(same_as(a,b)).` |
+| Learning | — | `learn_from(event, outcome) :- cond.` |
+| Periodic | — | `every(seconds, goal).` |
+| Condition monitor | — | `when(condition) :- body.` |
+| Helper | — | `helper(head) :- body.` |
+| Proposal handler | — | `on_proposal(action) :- body.` |
+| AI Oracle | — | `ask_ai(context, result)` (in body) |
+| Blackboard | Linda (TCP) | `bb_read`/`bb_write`/`bb_remove` (in body) |

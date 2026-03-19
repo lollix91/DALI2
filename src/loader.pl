@@ -1,38 +1,35 @@
 %% DALI2 Loader - Agent definition parser
 %%
-%% Fully compatible with original DALI syntax — no agent prefix needed.
-%% Rules are associated with the most recently declared agent via :- agent(Name).
+%% Uses DALI syntax. Rules are associated with the most recently
+%% declared agent via :- agent(Name).
 %%
-%% DALI syntax (no prefix):
-%%   eventE(X) :> body.                       External event (E suffix + :> operator)
-%%   eventI(X) :> body.                       Internal event (I suffix + :> operator)
+%% Supported syntax:
+%%   eventE(X) :> body.                       External event
+%%   eventI(X) :> body.                       Internal event
 %%   internal_event(Ev, Period, Rep, S, St).  Internal event configuration
-%%   actionA(X) :- body.                      Action definition (A suffix)
-%%   condN :- body.                           Present event (N suffix)
-%%   cond :< action.                          Condition-action (:< operator)
-%%   head ~/ past1, past2.                    Export past (~/ operator)
-%%   head </ past1, past2.                    Export past NOT done (</ operator)
-%%   head ?/ past1, past2.                    Export past done (?/ operator)
-%%   :~ condition.                            Constraint (:~ operator)
-%%   told(_, Pattern, Priority) :- true.      Told rule (DALI communication.con style)
+%%   actionA(X) :- body.                      Action definition
+%%   condN :- body.                           Present event
+%%   cond :< action.                          Condition-action
+%%   head ~/ past1, past2.                    Export past
+%%   head </ past1, past2.                    Export past NOT done
+%%   head ?/ past1, past2.                    Export past done
+%%   :~ condition.                            Constraint
+%%   told(_, Pattern, Priority) :- true.      Told rule
 %%   tell(_, _, Pattern) :- true.             Tell rule
 %%   past_event(Event, Duration).             Past lifetime
 %%   remember_event(Event, Duration).         Remember lifetime
 %%   remember_event_mod(Ev, number(N), M).    Remember limit
 %%   obt_goal(Goal) :- Plan.                  Obtain goal
 %%   test_goal(Goal) :- Plan.                 Test goal
-%%   believes(Fact).                          Belief (alternative to bare facts)
+%%   believes(Fact).                          Belief
+%%   every(Seconds, Goal).                    Periodic task
+%%   when(Condition) :- Body.                 Condition monitor
+%%   helper(Head) :- Body.                    Utility predicate
+%%   on_proposal(Action) :- Body.             Proposal handler
+%%   learn_from(Event, Outcome) :- Body.      Learning rule
+%%   ontology(Declaration).                   Inline ontology
+%%   ontology_file(File).                     External ontology file
 %%
-%% DALI2 new features (similar style, no prefix):
-%%   every(Seconds, Goal).                    Periodic tasks [NEW]
-%%   when(Condition) :- Body.                 Condition monitors [NEW]
-%%   helper(Head) :- Body.                    Utility predicates [NEW]
-%%   on_proposal(Action) :- Body.             Proposal handlers [NEW]
-%%   learn_from(Event, Outcome) :- Body.      Learning rules [NEW]
-%%   ontology(Declaration).                   Inline ontology [NEW]
-%%   ontology_file(File).                     External ontology file [NEW]
-%%
-%% Optional agent: prefix still works for backward compat with previous DALI2 files.
 
 :- module(loader, [
     load_agents/1,
@@ -491,71 +488,6 @@ process_term(ontology(D)) :- !,
 process_term(Name:ontology_file(F)) :- !, assert(agent_ontology_file(Name, F)).
 process_term(ontology_file(F)) :- !,
     (ctx(Ag) -> assert(agent_ontology_file(Ag, F)) ; true).
-
-%% ============================================================
-%% DALI2 EXTENDED SYNTAX (with prefix — backward compat)
-%% ============================================================
-
-process_term((Name:on(Ev) :- B)) :- !,
-    transform_body(B, TB), assert(agent_handler(Name, Ev, TB)).
-process_term(Name:on(Ev)) :- !, assert(agent_handler(Name, Ev, true)).
-
-process_term((Name:do(A) :- B)) :- !,
-    transform_body(B, TB), assert(agent_action(Name, A, TB)).
-process_term(Name:do(A)) :- !, assert(agent_action(Name, A, true)).
-
-process_term((Name:internal(Ev, Opts) :- B)) :- !,
-    (is_list(Opts) -> O = Opts ; O = [Opts]),
-    transform_body(B, TB), assert(agent_internal(Name, Ev, O, TB)).
-process_term((Name:internal(Ev) :- B)) :- !,
-    transform_body(B, TB), assert(agent_internal(Name, Ev, [forever], TB)).
-process_term(Name:internal(Ev, Opts)) :- !,
-    (is_list(Opts) -> O = Opts ; O = [Opts]),
-    assert(agent_internal(Name, Ev, O, true)).
-process_term(Name:internal(Ev)) :- !,
-    assert(agent_internal(Name, Ev, [forever], true)).
-
-process_term(Name:told(Pat, Pri)) :- !, assert(agent_told(Name, Pat, Pri)).
-process_term(Name:told(Pat)) :- !, assert(agent_told(Name, Pat, 0)).
-process_term(Name:tell(Pat)) :- !, assert(agent_tell(Name, Pat)).
-%% DALI-style told/tell with 3 args and prefix
-process_term(Name:told(_, Pat, Pri)) :- !, assert(agent_told(Name, Pat, Pri)).
-process_term(Name:tell(_, _, Pat)) :- !, assert(agent_tell(Name, Pat)).
-
-process_term((Name:on_change(C) :- B)) :- !,
-    transform_body(B, TB), assert(agent_condition_action(Name, C, TB)).
-process_term((Name:on_change(C1, C2) :- B)) :- !,
-    transform_body(B, TB), assert(agent_condition_action(Name, (C1, C2), TB)).
-process_term((Name:on_present(C) :- B)) :- !,
-    transform_body(B, TB), assert(agent_present(Name, C, TB)).
-process_term((Name:on_present(C1, C2) :- B)) :- !,
-    transform_body(B, TB), assert(agent_present(Name, (C1, C2), TB)).
-process_term((Name:on_all(EL) :- B)) :- !,
-    transform_body(B, TB), assert(agent_multi_event(Name, EL, TB)).
-
-process_term((Name:constraint(C) :- B)) :- !,
-    transform_body(B, TB), assert(agent_constraint(Name, C, TB)).
-process_term((Name:constraint(C1, C2) :- B)) :- !,
-    transform_body(B, TB), assert(agent_constraint(Name, (C1, C2), TB)).
-process_term(Name:constraint(C)) :- !, assert(agent_constraint(Name, C, true)).
-process_term(Name:constraint(C1, C2)) :- !, assert(agent_constraint(Name, (C1, C2), true)).
-
-process_term((Name:goal(T, G) :- P)) :- !,
-    transform_body(P, TP), assert(agent_goal(Name, T, G, TP)).
-process_term((Name:goal(T, G, Ex) :- P)) :- !,
-    transform_body(P, TP), assert(agent_goal(Name, T, (G, Ex), TP)).
-process_term(Name:goal(T, G)) :- !, assert(agent_goal(Name, T, G, true)).
-
-process_term(Name:past_lifetime(Pat, Dur)) :- !, assert(agent_past_lifetime(Name, Pat, Dur)).
-process_term(Name:remember_lifetime(Pat, Dur)) :- !, assert(agent_remember_lifetime(Name, Pat, Dur)).
-process_term(Name:remember_limit(Pat, N, M)) :- !, assert(agent_remember_limit(Name, Pat, N, M)).
-
-process_term((Name:on_past(EL) :- B)) :- !,
-    transform_body(B, TB), assert(agent_past_reaction(Name, EL, TB)).
-process_term((Name:on_past_done(A, EL) :- B)) :- !,
-    transform_body(B, TB), assert(agent_past_done_reaction(Name, A, EL, TB)).
-process_term((Name:on_past_not_done(A, EL) :- B)) :- !,
-    transform_body(B, TB), assert(agent_past_not_done_reaction(Name, A, EL, TB)).
 
 %% ============================================================
 %% PREFIX-LESS Action (A suffix) and Present (N suffix)

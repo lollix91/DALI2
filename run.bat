@@ -52,13 +52,13 @@ if not "%~1"=="" (
 echo Using: !AGENT_FILE!
 echo.
 
-REM --- OpenAI API key (optional) ---
-if not "%OPENAI_API_KEY%"=="" (
-    echo OpenAI API key: already set in environment
+REM --- OpenRouter API key (optional) ---
+if not "%OPENROUTER_API_KEY%"=="" (
+    echo OpenRouter API key: already set in environment
 ) else (
-    echo OpenAI API key is optional. Leave empty to skip AI features.
-    set /p "OPENAI_API_KEY=OpenAI API key [none]: "
-    if "!OPENAI_API_KEY!"=="" (
+    echo OpenRouter API key is optional. Leave empty to skip AI features.
+    set /p "OPENROUTER_API_KEY=OpenRouter API key [none]: "
+    if "!OPENROUTER_API_KEY!"=="" (
         echo AI Oracle: disabled
     ) else (
         echo AI Oracle: enabled

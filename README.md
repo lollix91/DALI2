@@ -14,7 +14,8 @@ DALI2 is the evolution of the [DALI](https://github.com/AAAI-DISIM-UnivAQ/DALI) 
 - **Integrated web UI** — dashboard, log viewer, message sender, agent inspector
 - **Docker-ready** — runs in a container with Redis, no local installation needed
 - **LAN-ready** — remote machines on the same network just point to the same Redis instance
-- **New features** — AI Oracle (ChatGPT), periodic tasks, condition monitors, helpers, blackboard, federation
+- **AI Oracle** — connect to any LLM via OpenRouter (GPT, Claude, Gemini, etc.)
+- **Extra features** — periodic tasks, condition monitors, helpers, blackboard, federation
 
 **Documentation:** [RULES.md](RULES.md) (language reference) · [EXAMPLES.md](EXAMPLES.md) (examples guide)
 
@@ -32,11 +33,11 @@ AGENT_FILE=examples/emergency.pl docker compose up --build
 # PowerShell
 $env:AGENT_FILE="examples/emergency.pl"; docker compose up --build
 
-# With OpenAI API key (Linux/macOS)
-OPENAI_API_KEY=sk-your-key docker compose up --build
+# With OpenRouter API key (Linux/macOS)
+OPENROUTER_API_KEY=sk-or-... docker compose up --build
 
 # PowerShell
-$env:OPENAI_API_KEY="sk-your-key"; docker compose up --build
+$env:OPENROUTER_API_KEY="sk-or-..."; docker compose up --build
 ```
 
 Open [http://localhost:8080](http://localhost:8080) in your browser.
@@ -296,7 +297,7 @@ dispatchA(Type, Location) :-
 believes(status(idle)).
 ```
 
-**New DALI2 features** (similar style, no prefix): `every` (periodic), `when` (condition monitor), `helper` (utility predicates), `on_proposal` (action proposals), `learn_from` (learning), `ontology`/`ontology_file`, `ask_ai` (AI Oracle), `bb_read`/`bb_write`/`bb_remove` (blackboard).
+**Additional features:** `every` (periodic), `when` (condition monitor), `helper` (utility predicates), `on_proposal` (action proposals), `learn_from` (learning), `ontology`/`ontology_file`, `ask_ai` (AI Oracle), `bb_read`/`bb_write`/`bb_remove` (blackboard).
 
 ## Architecture: Redis Star Topology
 
@@ -332,15 +333,15 @@ Each agent runs as a **separate OS process**. All agents communicate through **R
 
 **LAN support** — remote machines on the same network just point to the same Redis instance via `REDIS_HOST` environment variable.
 
-## AI Oracle (ChatGPT Integration)
+## AI Oracle (via OpenRouter)
 
-DALI2 can connect to OpenAI's ChatGPT API. Agents send context and receive a Prolog fact back.
+DALI2 can connect to any LLM through [OpenRouter](https://openrouter.ai/). Agents send context and receive a Prolog fact back.
 
 ### Configuration
 
-- **Environment variable**: Set `OPENAI_API_KEY` when starting the Docker container
+- **Environment variable**: Set `OPENROUTER_API_KEY` when starting the Docker container
 - **Web UI**: Enter the key in the "AI Oracle" panel at runtime
-- **API**: `POST /api/ai/key` with `{"key": "sk-..."}`
+- **API**: `POST /api/ai/key` with `{"key": "sk-or-..."}`
 
 The API key is **optional** — if not set, `ai_available` fails and `ask_ai` returns `suggestion(no_ai_available)`.
 
@@ -361,7 +362,7 @@ analyzeE(Data) :>
 
 ### Supported models
 
-`gpt-4o-mini` (default), `gpt-4o`, `gpt-4-turbo`, `gpt-3.5-turbo`. Change via web UI or `POST /api/ai/model`.
+`openai/gpt-4o-mini` (default), `openai/gpt-4o`, `anthropic/claude-3.5-sonnet`, `google/gemini-2.0-flash`, and [any model on OpenRouter](https://openrouter.ai/models). Change via web UI or `POST /api/ai/model`.
 
 ## Web UI
 
@@ -396,7 +397,7 @@ The web interface at `http://localhost:8080` provides:
 | GET | `/api/source` | Get agent file source |
 | POST | `/api/save` | Save agent file `{"content":"..."}` |
 | GET | `/api/ai/status` | AI oracle status (enabled, model) |
-| POST | `/api/ai/key` | Set OpenAI API key `{"key":"sk-..."}` |
+| POST | `/api/ai/key` | Set OpenRouter API key `{"key":"sk-or-..."}` |
 | POST | `/api/ai/model` | Set AI model `{"model":"gpt-4o"}` |
 | POST | `/api/ai/ask` | Query AI `{"context":"..."}` |
 | GET | `/api/peers` | List federation peers |
@@ -416,7 +417,7 @@ The web interface at `http://localhost:8080` provides:
 | Communication | TCP sockets (Linda) | Redis star topology + HTTP federation |
 | Tokenizer | Complex (tokefun + togli_var + metti_var) | None (direct parsing with DALI operators) |
 | UI | Separate Python project (dalia) | Integrated web UI |
-| AI integration | External Python TCP service | Built-in (direct OpenAI API calls) **[NEW]** |
+| AI integration | External Python TCP service | Built-in (OpenRouter API) |
 | Docker setup | Complex (SICStus install) | Simple (swipl base image) |
 | Event syntax | `eventE(X) :> body.` | `eventE(X) :> body.` (identical!) |
 | Message sending | `messageA(dest, send_message(ev(X), Me))` | Same, or `send(dest, ev(X))` |
@@ -424,7 +425,7 @@ The web interface at `http://localhost:8080` provides:
 | Tell/told | `told(_, pattern, pri) :- true.` | `told(_, pattern, pri) :- true.` (identical!) |
 | FIPA messages | `confirm`/`disconfirm`/`propose`/`query_ref` | `send(to, confirm(fact))` — full FIPA-ACL |
 | Action definition | `actionA(X) :- body.` | `actionA(X) :- body.` (identical!) |
-| Action proposal | `propose(A,C,Ag)` + `call_propose` | `on_proposal(action) :- body.` **[NEW]** |
+| Action proposal | `propose(A,C,Ag)` + `call_propose` | `on_proposal(action) :- body.` |
 | Past lifetime | `past_event(ev, 60).` | `past_event(ev, 60).` (identical!) |
 | Remember | `remember_event_mod(ev, number(5), last).` | `remember_event_mod(ev, number(5), last).` (identical!) |
 | Export past (~/) | `head ~/ past1, past2.` | `head ~/ past1, past2.` (identical!) |
@@ -436,13 +437,13 @@ The web interface at `http://localhost:8080` provides:
 | Multi-events | `ev1E, ev2E :> body.` | `ev1E, ev2E :> body.` (identical!) |
 | Constraints | `:~ constraint.` | `:~ constraint.` (identical!) |
 | Ontologies | `meta/3` + OWL files | `ontology(same_as(a,b)).` + `ontology_file` |
-| Learning | `learning.pl` + constraints | `learn_from(event, outcome) :- body.` **[NEW]** |
+| Learning | `learning.pl` + constraints | `learn_from(event, outcome) :- body.` |
 | Goals | `obt_goal(goal) :- plan.` | `obt_goal(goal) :- plan.` (identical!) |
-| Periodic tasks | — | `every(seconds, goal).` **[NEW]** |
-| Condition monitors | — | `when(condition) :- body.` **[NEW]** |
-| Helpers | — | `helper(head) :- body.` **[NEW]** |
-| AI Oracle | — | `ask_ai(context, result)` **[NEW]** |
-| Blackboard | Linda (TCP) | `bb_read`/`bb_write`/`bb_remove` (Redis) **[NEW]** |
+| Periodic tasks | — | `every(seconds, goal).` |
+| Condition monitors | — | `when(condition) :- body.` |
+| Helpers | — | `helper(head) :- body.` |
+| AI Oracle | — | `ask_ai(context, result)` |
+| Blackboard | Linda (TCP) | `bb_read`/`bb_write`/`bb_remove` (Redis) |
 
 ## License
 

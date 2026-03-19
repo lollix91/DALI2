@@ -410,7 +410,7 @@ Both files demonstrate DALI syntax:
 - `past_event/2`, `remember_event/2`, `remember_event_mod/3` for past lifetime
 - `told/3`, `tell/3` for communication filtering (DALI `communication.con` style)
 
-New DALI2-only features (marked `[NEW]` in the file) are integrated without prefix:
+Additional features are integrated without prefix:
 - `every`, `when`, `helper`, `on_proposal`, `learn_from`, `ontology`, `ontology_file`, `bb_read`/`bb_write`/`bb_remove`
 
 ### Running

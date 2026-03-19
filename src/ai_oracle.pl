@@ -1,6 +1,6 @@
-%% ai_oracle.pl - OpenAI/ChatGPT integration for DALI2
-%% Sends context to ChatGPT and receives a Prolog fact back.
-%% The API key is read from the OPENAI_API_KEY environment variable.
+%% ai_oracle.pl - AI Oracle integration for DALI2 via OpenRouter
+%% Sends context to an LLM and receives a Prolog fact back.
+%% The API key is read from the OPENROUTER_API_KEY environment variable.
 
 :- module(ai_oracle, [
     ask_ai/2,           % ask_ai(+Context, -PrologFact)
@@ -18,15 +18,15 @@
 :- dynamic ai_api_key/1.
 :- dynamic ai_model/1.
 
-%% Default model
-ai_model('gpt-4o-mini').
+%% Default model (OpenRouter format)
+ai_model('openai/gpt-4o-mini').
 
 %% ============================================================
 %% CONFIGURATION
 %% ============================================================
 
 %% Initialize API key from environment variable
-:- (getenv('OPENAI_API_KEY', Key), Key \= '' ->
+:- (getenv('OPENROUTER_API_KEY', Key), Key \= '' ->
         assert(ai_api_key(Key))
     ; true).
 
@@ -50,7 +50,7 @@ ai_available :-
 %% ============================================================
 
 %% ask_ai(+Context, -PrologFact)
-%% Sends context to ChatGPT with a default system prompt that asks
+%% Sends context to the LLM with a default system prompt that asks
 %% for a Prolog fact response. Returns the parsed Prolog term.
 ask_ai(Context, PrologFact) :-
     DefaultPrompt = "You are a logic module for a DALI multi-agent system. \c
@@ -102,11 +102,11 @@ ask_ai_impl(Context, SystemPrompt, PrologFact) :-
     },
     %% Serialize to JSON string
     with_output_to(string(JsonStr), json_write_dict(current_output, Body, [])),
-    %% Make HTTP request to OpenAI
+    %% Make HTTP request to OpenRouter
     atom_concat('Bearer ', ApiKey, AuthValue),
     setup_call_cleanup(
         http_open(
-            'https://api.openai.com/v1/chat/completions',
+            'https://openrouter.ai/api/v1/chat/completions',
             ResponseStream,
             [
                 method(post),
@@ -127,7 +127,7 @@ ask_ai_impl(Context, SystemPrompt, PrologFact) :-
         close(ResponseStream)
     ).
 
-%% Extract content string from OpenAI JSON response dict
+%% Extract content string from API JSON response dict
 extract_content(Dict, Content) :-
     get_dict(choices, Dict, Choices),
     Choices = [First|_],

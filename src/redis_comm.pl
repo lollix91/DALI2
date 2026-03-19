@@ -44,8 +44,6 @@
 :- use_module(library(lists)).
 :- use_module(library(broadcast)).
 
-:- dynamic redis_connection/1.       % redis_connection(Connection)
-:- dynamic redis_sub_connection/1.   % redis_sub_connection(SubConnection)
 :- dynamic redis_msg_queue/3.        % redis_msg_queue(To, Content, From) — buffered incoming
 :- dynamic redis_is_connected/0.
 

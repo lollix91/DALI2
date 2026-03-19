@@ -42,21 +42,14 @@
 :- use_module(ai_oracle).
 :- use_module(redis_comm).
 :- use_module(library(lists)).
-:- use_module(library(http/http_open)).
-:- use_module(library(http/http_json)).
 :- use_module(library(process)).
 
 %% Process management state
-:- dynamic next_agent_port/1.
-:- dynamic master_url_setting/1.
 :- dynamic agent_file_setting/1.
 
 %% Agent runtime state
 :- dynamic agent_running/1.            % agent_running(Name)
-:- dynamic agent_thread/2.             % agent_thread(Name, ThreadId) - legacy thread mode
 :- dynamic agent_process_pid/2.        % agent_process_pid(Name, Pid) - OS process PID
-:- dynamic agent_process_url/2.        % agent_process_url(Name, Url) - agent HTTP URL
-:- dynamic agent_process_port/2.       % agent_process_port(Name, Port)
 :- dynamic agent_log_entry/3.          % agent_log_entry(Name, Timestamp, Message)
 :- dynamic agent_past_event/4.         % agent_past_event(Name, Event, Timestamp, Source)
 :- dynamic agent_belief_rt/2.          % agent_belief_rt(Name, Fact)
@@ -118,30 +111,12 @@ stop_agent(Name) :-
     (agent_running(Name) ->
         retract(agent_running(Name)),
         bb_unregister_agent(Name),
-        %% Send stop command to agent process via HTTP
-        (agent_process_url(Name, Url) ->
-            format(atom(StopUrl), "~w/stop", [Url]),
-            catch(
-                (http_open(StopUrl, Reply, [method(post), timeout(3),
-                    post(atom('application/json', '{}')), status_code(_)]),
-                 read_string(Reply, _, _), close(Reply)),
-                _, true
-            )
-        ; true),
-        %% Kill process if still running
+        %% Kill OS process if still running
         (agent_process_pid(Name, Pid) ->
             retract(agent_process_pid(Name, Pid)),
             catch(process_kill(Pid), _, true),
             catch(process_wait(Pid, _, [timeout(3)]), _, true)
         ; true),
-        %% Clean up legacy thread if present
-        (agent_thread(Name, Tid) ->
-            retract(agent_thread(Name, Tid)),
-            catch(thread_signal(Tid, throw(stop_agent)), _, true),
-            catch(thread_join(Tid, _), _, true)
-        ; true),
-        retractall(agent_process_url(Name, _)),
-        retractall(agent_process_port(Name, _)),
         log_agent(Name, "Agent stopped")
     ; true).
 
@@ -191,25 +166,6 @@ all_logs(Entries) :-
 %% PROCESS MANAGEMENT HELPERS
 %% ============================================================
 
-%% allocate_agent_port(+Name, -Port) - Assign a unique port to an agent process
-allocate_agent_port(_Name, Port) :-
-    (retract(next_agent_port(P)) ->
-        Port = P,
-        NextPort is P + 1,
-        assert(next_agent_port(NextPort))
-    ;
-        Port = 9001,
-        assert(next_agent_port(9002))
-    ).
-
-%% get_master_url(-Url) - Get the master server URL
-get_master_url(Url) :-
-    (master_url_setting(U) -> Url = U ; Url = 'http://localhost:8080').
-
-%% set_master_url(+Url) - Set the master server URL
-set_master_url(Url) :-
-    retractall(master_url_setting(_)),
-    assert(master_url_setting(Url)).
 
 %% get_agent_file(-File) - Get the current agent file path
 get_agent_file(File) :-
@@ -220,47 +176,6 @@ set_agent_file(File) :-
     retractall(agent_file_setting(_)),
     assert(agent_file_setting(File)).
 
-%% send_message_to_agent(+From, +To, +Content) - Route message to agent process
-send_message_to_agent(From, To, Content) :-
-    (agent_process_url(To, Url) ->
-        term_to_atom(Content, ContentAtom),
-        format(atom(MsgUrl), "~w/message", [Url]),
-        atom_json_dict(Payload, _{from: From, content: ContentAtom}, []),
-        catch(
-            (http_open(MsgUrl, Reply, [
-                method(post),
-                post(atom('application/json', Payload)),
-                status_code(_Code),
-                timeout(5)
-            ]),
-            read_string(Reply, _, _),
-            close(Reply)),
-            _Error, true
-        )
-    ;
-        %% Agent not running as process — try local blackboard delivery
-        communication:send(From, To, Content)
-    ).
-
-%% agent_beliefs_remote(+Name, -Beliefs) - Get beliefs from agent process via HTTP
-agent_beliefs_remote(Name, Beliefs) :-
-    (agent_process_url(Name, Url) ->
-        format(atom(BUrl), "~w/beliefs", [Url]),
-        catch(
-            (http_open(BUrl, Reply, [status_code(200), timeout(5)]),
-             json_read_dict(Reply, Dict),
-             close(Reply),
-             get_dict(beliefs, Dict, AtomList),
-             maplist(term_to_atom_safe, Beliefs, AtomList)),
-            _Error,
-            Beliefs = []
-        )
-    ;
-        findall(B, agent_belief_rt(Name, B), Beliefs)
-    ).
-
-term_to_atom_safe(Term, Atom) :-
-    catch(term_to_atom(Term, Atom), _, Term = Atom).
 
 %% ============================================================
 %% AGENT LOOP
