@@ -26,6 +26,7 @@ user:message_hook(_, informational, _) :- !.
 :- use_module(engine).
 :- use_module(ai_oracle).
 :- use_module(federation).
+:- use_module(redis_comm).
 
 %% HTTP Routes
 :- http_handler(root(.),         serve_index,       []).
@@ -77,7 +78,9 @@ main :-
     format("Node: ~w | Port: ~w~n", [NodeName, Port]),
     bb_init,
     federation:fed_init(NodeName),
-    %% Set master URL and agent file for engine process management
+    %% Initialize Redis connection (master also connects for inject/send from web UI)
+    catch(redis_comm:redis_init, _, format("WARNING: Redis not available~n")),
+    %% Set agent file for engine process management
     format(atom(MasterUrl), "http://localhost:~w", [Port]),
     engine:set_master_url(MasterUrl),
     (AgentFile \= '' ->

@@ -5,39 +5,43 @@ DALI2 uses **DALI-compatible syntax** — the same operators and suffixes as the
 
 ## Syntax Overview
 
-DALI2 supports the original DALI syntax with an `agent:` prefix for multi-agent files:
+DALI2 uses **identical syntax** to the original DALI — no prefix needed. Each `:- agent(name).` directive sets the context for all subsequent rules until the next agent declaration.
 
-| Construct | DALI Syntax | DALI2 Syntax (with agent prefix) |
-|-----------|-------------|----------------------------------|
-| External event | `eventE(X) :> body.` | `agent:eventE(X) :> body.` |
-| Internal event | `eventI(X) :> body.` | `agent:eventI(X) :> body.` |
-| Internal config | `internal_event(ev, 3, forever, true, stop).` | `agent:internal_event(ev, 3, forever, true, stop).` |
-| Action definition | `actionA(X) :- body.` | `agent:actionA(X) :- body.` |
-| Present event | `condN :- body.` | `agent:condN :- body.` |
-| Condition-action | `cond :< action.` | `agent:cond :< action.` |
-| Export past | `head ~/ past1, past2.` | `agent:head ~/ past1, past2.` |
-| Export past (not done) | `head </ past1, past2.` | `agent:head </ past1, past2.` |
-| Export past (done) | `head ?/ past1, past2.` | `agent:head ?/ past1, past2.` |
-| Constraint | `:~ condition.` | `agent :~ condition.` |
-| Past lifetime | `past_event(ev, 60).` | `agent:past_event(ev, 60).` |
-| Remember | `remember_event(ev, 3600).` | `agent:remember_event(ev, 3600).` |
-| Remember limit | `remember_event_mod(ev, number(5), last).` | `agent:remember_event_mod(ev, number(5), last).` |
-| Obtain goal | `obt_goal(goal) :- plan.` | `agent:obt_goal(goal) :- plan.` |
-| Test goal | `test_goal(goal) :- plan.` | `agent:test_goal(goal) :- plan.` |
-| Message sending | `messageA(dest, send_message(content, Me))` | Same (in body) or `send(dest, content)` |
-| Past check | `evp(event)` / `eventP(args)` | Same (in body) or `has_past(event)` |
-| Residue goal | `tenta_residuo(goal)` | Same (in body) or `achieve(goal)` |
+| Construct | Syntax (identical to DALI) |
+|-----------|---------------------------|
+| Agent declaration | `:- agent(name, [options]).` |
+| External event | `eventE(X) :> body.` |
+| Internal event | `eventI(X) :> body.` |
+| Internal config | `internal_event(ev, 3, forever, true, stop).` |
+| Action definition | `actionA(X) :- body.` |
+| Present event | `condN :- body.` |
+| Condition-action | `cond :< action.` |
+| Export past | `head ~/ past1, past2.` |
+| Export past (not done) | `head </ past1, past2.` |
+| Export past (done) | `head ?/ past1, past2.` |
+| Constraint | `:~ condition.` |
+| Past lifetime | `past_event(ev, 60).` |
+| Remember | `remember_event(ev, 3600).` |
+| Remember limit | `remember_event_mod(ev, number(5), last).` |
+| Obtain goal | `obt_goal(goal) :- plan.` |
+| Test goal | `test_goal(goal) :- plan.` |
+| Told rule | `told(_, pattern, priority) :- true.` |
+| Tell rule | `tell(_, _, pattern) :- true.` |
+| Message sending | `messageA(dest, send_message(content, Me))` |
+| Past check | `evp(event)` or `eventP(args)` |
+| Residue goal | `tenta_residuo(goal)` |
+| Belief | `believes(fact).` or bare fact |
 
 **New DALI2 features** (no DALI equivalent, marked with **[NEW]**):
-- `agent:every(Seconds, Goal).` — periodic tasks **[NEW]**
-- `agent:when(Condition) :- Body.` — condition monitors **[NEW]**
-- `agent:helper(Head) :- Body.` — utility predicates **[NEW]**
-- `agent:on_proposal(Action) :- Body.` — action proposal handlers **[NEW]**
-- `agent:learn_from(Event, Outcome) :- Body.` — learning rules **[NEW]**
-- `agent:ontology(same_as(a, b)).` — inline ontology **[NEW]**
-- `agent:ontology_file('file.pl').` — external ontology file **[NEW]**
-- `ask_ai(Context, Result)` — AI Oracle integration **[NEW]**
-- `bb_read/bb_write/bb_remove` — blackboard operations **[NEW]**
+- `every(Seconds, Goal).` — periodic tasks **[NEW]**
+- `when(Condition) :- Body.` — condition monitors **[NEW]**
+- `helper(Head) :- Body.` — utility predicates **[NEW]**
+- `on_proposal(Action) :- Body.` — action proposal handlers **[NEW]**
+- `learn_from(Event, Outcome) :- Body.` — learning rules **[NEW]**
+- `ontology(same_as(a, b)).` — inline ontology **[NEW]**
+- `ontology_file('file.pl').` — external ontology file **[NEW]**
+- `ask_ai(Context, Result)` — AI Oracle integration (body predicate) **[NEW]**
+- `bb_read/bb_write/bb_remove` — Redis blackboard operations (body predicates) **[NEW]**
 
 ## Table of Contents
 
@@ -981,7 +985,7 @@ All standard Prolog predicates are available: arithmetic (`is`, `>`, `<`, `>=`, 
 
 ## Agent Lifecycle
 
-Each agent runs as a **separate OS process** with a cycle-based event loop. The master server spawns one `swipl` process per agent, each with its own HTTP server for receiving messages.
+Each agent runs as a **separate OS process** with a cycle-based event loop. The master server spawns one `swipl` process per agent. Agents communicate via Redis pub/sub (LINDA channel).
 
 ```
 ┌─────────────────────────────────────────┐

@@ -3,6 +3,8 @@ FROM swipl:stable
 USER root
 WORKDIR /dali2
 
+# library(redis) is built into SWI-Prolog >= 8.3 — no pack install needed
+
 # Copy source and web files
 COPY src/ src/
 COPY web/ web/

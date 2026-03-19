@@ -38,6 +38,7 @@
 :- use_module(communication).
 :- use_module(loader).
 :- use_module(ai_oracle).
+:- use_module(redis_comm).
 :- use_module(library(lists)).
 :- use_module(library(http/http_open)).
 :- use_module(library(http/http_json)).
@@ -89,32 +90,25 @@ stop_all :-
     maplist(stop_agent, Names).
 
 %% start_agent(+Name) - Start a single agent as a separate OS process
+%%   Communication goes via Redis (LINDA channel), not HTTP.
 start_agent(Name) :-
     (agent_running(Name) ->
         log_agent(Name, "Agent already running")
     ;
-        loader:agent_def(Name, Options),
+        loader:agent_def(Name, _Options),
         assert(agent_running(Name)),
-        bb_register_agent(Name, Options),
-        %% Allocate a port for this agent process
-        allocate_agent_port(Name, AgentPort),
-        %% Get master URL and agent file
-        get_master_url(MasterUrl),
+        bb_register_agent(Name, _Options),
         get_agent_file(AgentFile),
-        %% Spawn separate swipl process
-        format(atom(PortAtom), "~w", [AgentPort]),
-        format(atom(AgentUrl), "http://localhost:~w", [AgentPort]),
-        assert(agent_process_url(Name, AgentUrl)),
-        assert(agent_process_port(Name, AgentPort)),
+        %% Spawn separate swipl process — only needs agent name and file
         process_create(
             path(swipl),
             ['-l', 'src/agent_process.pl', '-g', 'agent_main', '-t', 'halt',
-             '--', Name, PortAtom, MasterUrl, AgentFile],
+             '--', Name, AgentFile],
             [process(Pid), detached(true),
              stdout(pipe(_StdOut)), stderr(pipe(_StdErr))]
         ),
         assert(agent_process_pid(Name, Pid)),
-        log_agent(Name, "Agent process started (PID: ~w, port: ~w)", [Pid, AgentPort])
+        log_agent(Name, "Agent process started (PID: ~w, Redis)", [Pid])
     ).
 
 %% stop_agent(+Name) - Stop a single agent process
@@ -149,25 +143,12 @@ stop_agent(Name) :-
         log_agent(Name, "Agent stopped")
     ; true).
 
-%% inject_event(+AgentName, +Event) - Inject an external event into an agent process
+%% inject_event(+AgentName, +Event) - Inject an external event into an agent
+%%   Uses Redis LINDA channel to deliver the event to the agent process.
 inject_event(AgentName, Event) :-
-    (agent_process_url(AgentName, Url) ->
-        %% Send event to agent process via HTTP
-        term_to_atom(Event, EventAtom),
-        format(atom(EventUrl), "~w/event", [Url]),
-        atom_json_dict(Payload, _{event: EventAtom}, []),
-        catch(
-            (http_open(EventUrl, Reply, [
-                method(post),
-                post(atom('application/json', Payload)),
-                status_code(_Code),
-                timeout(5)
-            ]),
-            read_string(Reply, _, _),
-            close(Reply)),
-            Error,
-            log_agent(AgentName, "Failed to inject event: ~w", [Error])
-        )
+    (catch(redis_comm:redis_connected, _, fail) ->
+        %% Publish to LINDA channel — agent process will pick it up
+        redis_comm:redis_publish_linda(system, AgentName, Event)
     ;
         %% Fallback: legacy thread-based injection
         with_mutex(blackboard_mutex,

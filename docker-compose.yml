@@ -1,5 +1,11 @@
 # Single-instance mode (default). For distributed mode, use docker-compose.distributed.yml
 services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
   dali2:
     build: .
     init: true
@@ -10,5 +16,9 @@ services:
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - DALI2_NODE=${DALI2_NODE:-standalone}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
     command: ["8080", "${AGENT_FILE:-examples/agriculture.pl}"]
+    depends_on:
+      - redis
     restart: unless-stopped

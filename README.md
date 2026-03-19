@@ -6,13 +6,14 @@ DALI2 is the evolution of the [DALI](https://github.com/AAAI-DISIM-UnivAQ/DALI) 
 
 ## Key Features
 
-- **DALI-compatible syntax** — uses the same operators (`:>`, `:<`, `~/`, `</`, `?/`) and suffixes (`E`, `I`, `A`, `N`, `P`) as the original DALI
-- **Single-file agent definitions** — define all agents in one `.pl` file (with `agent:` prefix)
+- **Identical DALI syntax** — no prefix needed, same operators (`:>`, `:<`, `~/`, `</`, `?/`) and suffixes (`E`, `I`, `A`, `N`, `P`) as the original DALI
+- **Single-file multi-agent** — define all agents in one `.pl` file; `:- agent(name).` sets the context for subsequent rules
 - **Full DALI feature set** — reactive rules, internal events, goals, constraints, learning, ontologies, tell/told filtering, and more
-- **Process-per-agent architecture** — each agent runs as a separate OS process (not just a thread)
+- **Process-per-agent architecture** — each agent runs as a separate OS process
+- **Redis star topology** — agents communicate via Redis pub/sub (`LINDA` channel for messages, `LOGS` channel for monitoring)
 - **Integrated web UI** — dashboard, log viewer, message sender, agent inspector
-- **Docker-ready** — runs in a container, no local installation needed
-- **HTTP-based IPC** — agent processes communicate via HTTP through a central master server
+- **Docker-ready** — runs in a container with Redis, no local installation needed
+- **LAN-ready** — remote machines on the same network just point to the same Redis instance
 - **New features** — AI Oracle (ChatGPT), periodic tasks, condition monitors, helpers, blackboard, federation
 
 **Documentation:** [RULES.md](RULES.md) (language reference) · [EXAMPLES.md](EXAMPLES.md) (examples guide)
@@ -247,85 +248,89 @@ run.bat
 
 ## Agent Language
 
-Agents are defined in a single `.pl` file using DALI-compatible syntax. Each agent is declared with `:- agent(Name, Options).` and rules are prefixed with `agent:`.
+Agents are defined in a single `.pl` file using **identical DALI syntax** — no prefix needed. Each `:- agent(name).` directive sets the context for subsequent rules.
 
-DALI2 supports **both** the original DALI syntax (`:>`, `:<`, `~/`, `</`, `?/` operators with `E`/`I`/`A`/`N`/`P` suffixes) and the DALI2-extended syntax. See **[RULES.md](RULES.md)** for the complete reference and **[EXAMPLES.md](EXAMPLES.md)** for walkthroughs.
+See **[RULES.md](RULES.md)** for the complete reference and **[EXAMPLES.md](EXAMPLES.md)** for walkthroughs.
 
 ```prolog
 :- agent(my_agent, [cycle(1)]).
 
-%% React to external events (DALI syntax: E suffix + :> operator)
-my_agent:alarmE(Type, Location) :>
+%% External event (E suffix + :> operator) — identical to DALI
+alarmE(Type, Location) :>
     log("Alarm: ~w at ~w", [Type, Location]),
     assert_belief(active(Type, Location)),
     messageA(responder, send_message(dispatch(Type, Location), my_agent)).
 
-%% Internal event (DALI syntax: I suffix + :> operator + internal_event/5)
-my_agent:check_statusI :>
+%% Internal event (I suffix + :> operator + internal_event/5)
+check_statusI :>
     believes(active(Type, Location)),
     log("Still active: ~w at ~w", [Type, Location]).
-my_agent:internal_event(check_status, 5, forever, true, forever).
+internal_event(check_status, 5, forever, true, forever).
 
-%% Condition-action rule (DALI :< operator, edge-triggered)
-my_agent:believes(active(_, _)) :< (
+%% Condition-action rule (:< operator)
+believes(active(_, _)) :<
     log("Alert condition activated!"),
-    send(logger, log_event(alert_active, my_agent))
-).
+    send(logger, log_event(alert_active, my_agent)).
 
-%% Export past (DALI ~/ operator)
-my_agent:send(logger, report(Type, Loc)) ~/
+%% Export past (~/ operator)
+send(logger, report(Type, Loc)) ~/
     alarm(Type, Loc), response(Loc).
 
-%% Constraint (DALI :~ operator)
-my_agent :~ believes(active_count(N)), N < 100.
+%% Told rules (DALI communication.con style)
+told(_, alarm(_,_), 100) :- true.
+told(_, status(_), 50) :- true.
 
-%% Tell/told communication filtering (priority queue)
-my_agent:told(alarm(_,_), 100).    %% Accept alarms (high priority)
-my_agent:told(status(_), 50).      %% Accept status (lower priority)
-my_agent:tell(report(_)).          %% Only allowed to send reports
+%% Past event lifetime
+past_event(alarm(_,_), 60).
+remember_event(alarm(_,_), 3600).
 
-%% Past event lifetime (DALI syntax)
-my_agent:past_event(alarm(_,_), 60).
-my_agent:remember_event(alarm(_,_), 3600).
-
-%% Obtain goal (DALI obt_goal syntax)
-my_agent:obt_goal(believes(all_clear)) :-
+%% Obtain goal
+obt_goal(believes(all_clear)) :-
     send(coordinator, check_status_request).
 
-%% Action definition (DALI A suffix)
-my_agent:dispatchA(Type, Location) :-
+%% Action definition (A suffix)
+dispatchA(Type, Location) :-
     log("Dispatching for ~w at ~w", [Type, Location]).
 
 %% Initial beliefs
-my_agent:believes(status(idle)).
+believes(status(idle)).
 ```
 
-**New DALI2 features** (using similar style): `every` (periodic), `when` (condition monitor), `helper` (utility predicates), `on_proposal` (action proposals), `learn_from` (learning), `ontology`/`ontology_file`, `ask_ai` (AI Oracle), `bb_read`/`bb_write`/`bb_remove` (blackboard).
+**New DALI2 features** (similar style, no prefix): `every` (periodic), `when` (condition monitor), `helper` (utility predicates), `on_proposal` (action proposals), `learn_from` (learning), `ontology`/`ontology_file`, `ask_ai` (AI Oracle), `bb_read`/`bb_write`/`bb_remove` (blackboard).
 
-## Architecture: Process-per-Agent
+## Architecture: Redis Star Topology
 
-Each agent runs as a **separate OS process** (not just a thread). The master server (`server.pl`) spawns one `swipl` process per agent, each with its own HTTP server. Communication between agents flows through the master server via HTTP.
+Each agent runs as a **separate OS process**. All agents communicate through **Redis** in a star topology:
 
 ```
-┌──────────────────────────────────────────┐
-│            Master Server (:8080)         │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐ │
-│  │ Web UI   │ │Blackboard│ │Federation│ │
-│  │ REST API │ │ (central)│ │  (HTTP)  │ │
-│  └──────────┘ └──────────┘ └──────────┘ │
-│          ↕ HTTP IPC ↕                    │
-├──────────┬───────────┬───────────────────┤
-│ Agent 1  │ Agent 2   │ Agent N           │
-│ :9001    │ :9002     │ :900N             │
-│ (swipl)  │ (swipl)   │ (swipl)           │
-└──────────┴───────────┴───────────────────┘
+                    ┌─────────────┐
+                    │    Redis    │
+                    │  ┌───────┐  │
+                    │  │ LINDA │  │  ← pub/sub channel for messages
+                    │  │ LOGS  │  │  ← pub/sub channel for monitoring
+                    │  │  BB   │  │  ← SET for shared blackboard
+                    │  └───────┘  │
+                    └──────┬──────┘
+              ┌────────────┼────────────┐
+              ↕            ↕            ↕
+        ┌──────────┐ ┌──────────┐ ┌──────────┐
+        │ Agent 1  │ │ Agent 2  │ │ Agent N  │
+        │ (swipl)  │ │ (swipl)  │ │ (swipl)  │
+        └──────────┘ └──────────┘ └──────────┘
+
+        ┌──────────────────────────────────────┐
+        │         Master Server (:8080)        │
+        │  Web UI · REST API · Federation      │
+        └──────────────────────────────────────┘
 ```
 
-Each agent process:
-- Has its own event loop, beliefs, past memory, and goals
-- Receives messages via its HTTP endpoint
-- Sends messages to other agents via the master's relay API
-- Accesses the central blackboard via the master's blackboard API
+**LINDA channel** — all agents subscribe. Messages published as `TO:CONTENT:FROM` where `TO` is the destination agent (`*` for broadcast), `CONTENT` is the serialized Prolog term, `FROM` is the sender.
+
+**LOGS channel** — agents publish log entries for external monitoring. No subscription needed.
+
+**BB (Redis SET)** — shared blackboard replacing DALI's Linda tuple space. Agents read/write tuples via `bb_read`/`bb_write`/`bb_remove`.
+
+**LAN support** — remote machines on the same network just point to the same Redis instance via `REDIS_HOST` environment variable.
 
 ## AI Oracle (ChatGPT Integration)
 

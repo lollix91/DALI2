@@ -1,30 +1,21 @@
 %% DALI2 Agent Process - Standalone agent runner (one OS process per agent)
-%% Each agent runs as a separate SWI-Prolog process with its own HTTP server.
-%% Communicates with the master server via HTTP for:
-%%   - Receiving messages (master pushes events to agent's HTTP endpoint)
-%%   - Sending messages (agent POSTs to master's relay endpoint)
-%%   - Blackboard operations (agent calls master's blackboard API)
-%%   - Logging (agent POSTs logs to master)
+%% Each agent runs as a separate SWI-Prolog process.
+%% Communicates via Redis pub/sub (star topology):
+%%   - LINDA channel: all agents subscribe; messages as "TO:CONTENT:FROM"
+%%   - LOGS channel: agents publish log entries for monitoring
+%%   - BB (Redis SET): shared blackboard (replaces Linda tuple space)
 %%
 %% Usage:
 %%   swipl -l src/agent_process.pl -g agent_main -t halt -- \
-%%     <agent_name> <agent_port> <master_url> <agent_file>
+%%     <agent_name> <agent_file>
 
 :- module(agent_process, [agent_main/0]).
 
-:- use_module(library(http/thread_httpd)).
-:- use_module(library(http/http_dispatch)).
-:- use_module(library(http/http_json)).
-:- use_module(library(http/http_open)).
-:- use_module(library(http/http_header)).
-:- use_module(library(http/http_cors)).
-:- use_module(library(json)).
 :- use_module(library(lists)).
 
 :- use_module(loader).
 :- use_module(ai_oracle).
-
-:- set_setting(http:cors, [*]).
+:- use_module(redis_comm).
 
 %% Suppress informational messages
 :- multifile user:message_hook/3.
@@ -34,11 +25,8 @@ user:message_hook(_, informational, _) :- !.
 %% AGENT STATE (process-local)
 %% ============================================================
 :- dynamic agent_name/1.
-:- dynamic agent_port/1.
-:- dynamic master_url/1.
 :- dynamic agent_running/0.
 :- dynamic agent_event_queue/1.          % agent_event_queue(Event)
-:- dynamic agent_message_queue/1.        % agent_message_queue(message(From, Content, T))
 :- dynamic agent_past_event/3.           % agent_past_event(Event, Timestamp, Source)
 :- dynamic agent_belief_rt/1.            % agent_belief_rt(Fact)
 :- dynamic agent_log_entry/2.            % agent_log_entry(Timestamp, Message)
@@ -54,17 +42,6 @@ user:message_hook(_, informational, _) :- !.
 :- dynamic agent_residue_goal/2.         % agent_residue_goal(GoalId, Goal)
 :- dynamic agent_last_periodic/2.        % agent_last_periodic(PeriodicId, LastTime)
 
-%% HTTP Routes for this agent process
-:- http_handler(root(ping),             handle_ping,        []).
-:- http_handler(root(event),            handle_event,       [method(post)]).
-:- http_handler(root(message),          handle_message,     [method(post)]).
-:- http_handler(root(stop),             handle_stop,        [method(post)]).
-:- http_handler(root(status),           handle_status,      []).
-:- http_handler(root(beliefs),          handle_beliefs,     []).
-:- http_handler(root(past),             handle_past,        []).
-:- http_handler(root(learned),          handle_learned,     []).
-:- http_handler(root(goals),            handle_goals,       []).
-
 %% ============================================================
 %% MAIN ENTRY POINT
 %% ============================================================
@@ -72,12 +49,9 @@ user:message_hook(_, informational, _) :- !.
 agent_main :-
     set_prolog_flag(color_term, false),
     current_prolog_flag(argv, Argv),
-    parse_agent_args(Argv, Name, Port, MasterUrl, AgentFile),
+    parse_agent_args(Argv, Name, AgentFile),
     assert(agent_name(Name)),
-    assert(agent_port(Port)),
-    assert(master_url(MasterUrl)),
-    format(user_error, "[~w] Starting agent process on port ~w~n", [Name, Port]),
-    format(user_error, "[~w] Master URL: ~w~n", [Name, MasterUrl]),
+    format(user_error, "[~w] Starting agent process~n", [Name]),
     %% Load agent definitions
     loader:load_agents(AgentFile),
     %% Initialize beliefs
@@ -88,98 +62,15 @@ agent_main :-
         format(user_error, "[~w] WARNING: Agent not found in file ~w~n", [Name, AgentFile])
     ),
     assert(agent_running),
-    %% Start HTTP server for receiving events/messages
-    http_server(http_dispatch, [port(Port)]),
-    %% Register with master
-    register_with_master(Name, Port, MasterUrl),
-    %% Start event loop
-    format(user_error, "[~w] Agent process started~n", [Name]),
+    %% Connect to Redis and subscribe to LINDA channel
+    redis_comm:redis_init,
+    redis_comm:redis_subscribe_linda(Name),
+    format(user_error, "[~w] Agent process started (Redis)~n", [Name]),
     agent_loop.
 
-parse_agent_args(Argv, Name, Port, MasterUrl, AgentFile) :-
+parse_agent_args(Argv, Name, AgentFile) :-
     nth0(0, Argv, NameAtom), Name = NameAtom,
-    nth0(1, Argv, PortAtom), atom_number(PortAtom, Port),
-    nth0(2, Argv, MasterUrl),
-    nth0(3, Argv, AgentFile).
-
-%% Register this agent process with the master server
-register_with_master(Name, Port, MasterUrl) :-
-    format(atom(Url), "~w/api/agent-process/register", [MasterUrl]),
-    format(atom(AgentUrl), "http://localhost:~w", [Port]),
-    catch(
-        (atom_json_dict(Payload, _{name: Name, url: AgentUrl, port: Port}, []),
-         http_open(Url, Reply, [
-             method(post),
-             post(atom('application/json', Payload)),
-             status_code(Code)
-         ]),
-         read_string(Reply, _, _),
-         close(Reply),
-         (Code =:= 200 ->
-             format(user_error, "[~w] Registered with master~n", [Name])
-         ;
-             format(user_error, "[~w] Master registration returned ~w~n", [Name, Code])
-         )),
-        Error,
-        format(user_error, "[~w] Could not register with master: ~w~n", [Name, Error])
-    ).
-
-%% ============================================================
-%% HTTP HANDLERS (receive events/messages from master)
-%% ============================================================
-
-handle_ping(_Request) :-
-    reply_json_dict(_{status: ok}).
-
-handle_event(Request) :-
-    http_read_json_dict(Request, Dict),
-    get_dict(event, Dict, EventStr),
-    term_string(Event, EventStr),
-    with_mutex(agent_queue_mutex,
-        assert(agent_event_queue(Event))
-    ),
-    reply_json_dict(_{status: ok}).
-
-handle_message(Request) :-
-    http_read_json_dict(Request, Dict),
-    get_dict(from, Dict, From),
-    get_dict(content, Dict, ContentStr),
-    term_string(Content, ContentStr),
-    get_time(Stamp), T is truncate(Stamp * 1000),
-    with_mutex(agent_queue_mutex,
-        assert(agent_message_queue(message(From, Content, T)))
-    ),
-    reply_json_dict(_{status: ok}).
-
-handle_stop(_Request) :-
-    retractall(agent_running),
-    reply_json_dict(_{status: stopped}),
-    thread_send_message(main, stop_agent).
-
-handle_status(_Request) :-
-    agent_name(Name),
-    (agent_running -> Status = running ; Status = stopped),
-    reply_json_dict(_{agent: Name, status: Status}).
-
-handle_beliefs(_Request) :-
-    findall(B, agent_belief_rt(B), Beliefs),
-    maplist(term_to_atom, Beliefs, Atoms),
-    reply_json_dict(_{beliefs: Atoms}).
-
-handle_past(_Request) :-
-    findall(past(Ev, T, Src), agent_past_event(Ev, T, Src), Events),
-    maplist(term_to_atom, Events, Atoms),
-    reply_json_dict(_{past: Atoms}).
-
-handle_learned(_Request) :-
-    findall(learned(P, O), agent_learned_rt(P, O), Learned),
-    maplist(term_to_atom, Learned, Atoms),
-    reply_json_dict(_{learned: Atoms}).
-
-handle_goals(_Request) :-
-    findall(goal(Id, Status), agent_goal_status(Id, Status), Goals),
-    maplist(term_to_atom, Goals, Atoms),
-    reply_json_dict(_{goals: Atoms}).
+    nth0(1, Argv, AgentFile).
 
 %% ============================================================
 %% AGENT EVENT LOOP
@@ -225,17 +116,9 @@ get_cycle_ms(Options, Ms) :-
 %% ============================================================
 
 process_messages_local(Name) :-
-    collect_messages(Messages),
+    redis_comm:redis_poll_messages(Name, Messages),
     prioritize_messages_local(Name, Messages, Sorted),
     process_message_list_local(Name, Sorted).
-
-collect_messages(Msgs) :-
-    (with_mutex(agent_queue_mutex, retract(agent_message_queue(Msg))) ->
-        Msgs = [Msg | Rest],
-        collect_messages(Rest)
-    ;
-        Msgs = []
-    ).
 
 prioritize_messages_local(Name, Messages, Sorted) :-
     assign_priorities_local(Name, Messages, Prioritized),
@@ -709,16 +592,16 @@ execute_body_local(Name, (Cond -> Then)) :- !,
 execute_body_local(Name, \+(Goal)) :- !, \+(execute_body_local(Name, Goal)).
 execute_body_local(Name, not(Goal)) :- !, \+(execute_body_local(Name, Goal)).
 
-%% Communication — send via master
+%% Communication — send via Redis LINDA channel
 execute_body_local(Name, send(To, Content)) :- !,
     (should_allow_send_local(Name, Content) ->
-        send_to_master(Name, To, Content),
+        redis_comm:redis_publish_linda(Name, To, Content),
         log_local(Name, "Sent to ~w: ~w", [To, Content])
     ;
         log_local(Name, "Send blocked by tell rule: ~w to ~w", [Content, To])
     ).
 execute_body_local(Name, broadcast(Content)) :- !,
-    broadcast_via_master(Name, Content),
+    redis_comm:redis_publish_linda(Name, '*', Content),
     log_local(Name, "Broadcast: ~w", [Content]).
 
 %% Logging
@@ -827,13 +710,13 @@ execute_body_local(Name, reset_goal(Goal)) :- !,
     retractall(agent_residue_goal(GoalId, _)),
     log_local(Name, "Goal reset: ~w", [Goal]).
 
-%% Blackboard — via master HTTP API
+%% Blackboard — via Redis
 execute_body_local(_, bb_read(Pattern)) :- !,
-    bb_read_remote(Pattern).
+    redis_comm:redis_bb_read(Pattern).
 execute_body_local(Name, bb_write(Tuple)) :- !,
-    bb_write_remote(Tuple), log_local(Name, "Blackboard write: ~w", [Tuple]).
+    redis_comm:redis_bb_write(Tuple), log_local(Name, "Blackboard write: ~w", [Tuple]).
 execute_body_local(Name, bb_remove(Pattern)) :- !,
-    bb_remove_remote(Pattern), log_local(Name, "Blackboard remove: ~w", [Pattern]).
+    redis_comm:redis_bb_remove(Pattern), log_local(Name, "Blackboard remove: ~w", [Pattern]).
 
 %% findall
 execute_body_local(Name, findall(T, Goal, L)) :- !,
@@ -896,7 +779,7 @@ call_condition_local(has_past(Event)) :- !,
 call_condition_local(learned(Pattern, Outcome)) :- !, agent_learned_rt(Pattern, Outcome).
 call_condition_local(has_remember(Event)) :- !, agent_remember_ev(Event, _, _).
 call_condition_local(has_confirmed(Fact)) :- !, agent_past_event(confirmed(Fact), _, _).
-call_condition_local(bb_read(Pattern)) :- !, bb_read_remote(Pattern).
+call_condition_local(bb_read(Pattern)) :- !, redis_comm:redis_bb_read(Pattern).
 call_condition_local(Cond) :- call(Cond).
 
 %% ============================================================
@@ -971,122 +854,9 @@ log_local(Name, Message) :-
     Sec is truncate(S),
     format(atom(TimeStr), "~|~`0t~d~2+:~|~`0t~d~2+:~|~`0t~d~2+", [H, Mi, Sec]),
     format(user_error, "[~w] [~w] ~w~n", [TimeStr, Name, Message]),
-    %% Also send log to master (fire and forget)
-    catch(send_log_to_master(Name, Message), _, true).
+    %% Also publish to Redis LOGS channel
+    catch(redis_comm:redis_publish_log(Name, Message), _, true).
 
 log_local(Name, Format, Args) :-
     catch((format(atom(Msg), Format, Args), log_local(Name, Msg)), _, log_local(Name, Format)).
 
-%% ============================================================
-%% MASTER COMMUNICATION (HTTP client)
-%% ============================================================
-
-%% send_to_master(+From, +To, +Content) — Route message via master
-send_to_master(From, To, Content) :-
-    master_url(MasterUrl),
-    format(atom(Url), "~w/api/agent-process/relay", [MasterUrl]),
-    term_to_atom(Content, ContentAtom),
-    atom_json_dict(Payload, _{from: From, to: To, content: ContentAtom}, []),
-    catch(
-        (http_open(Url, Reply, [
-            method(post),
-            post(atom('application/json', Payload)),
-            status_code(_Code),
-            timeout(5)
-        ]),
-        read_string(Reply, _, _),
-        close(Reply)),
-        _Error, true  % fire and forget
-    ).
-
-%% broadcast_via_master(+From, +Content) — Broadcast via master
-broadcast_via_master(From, Content) :-
-    master_url(MasterUrl),
-    format(atom(Url), "~w/api/agent-process/broadcast", [MasterUrl]),
-    term_to_atom(Content, ContentAtom),
-    atom_json_dict(Payload, _{from: From, content: ContentAtom}, []),
-    catch(
-        (http_open(Url, Reply, [
-            method(post),
-            post(atom('application/json', Payload)),
-            status_code(_Code),
-            timeout(5)
-        ]),
-        read_string(Reply, _, _),
-        close(Reply)),
-        _Error, true
-    ).
-
-%% send_log_to_master(+Name, +Message) — Forward log entry to master
-send_log_to_master(Name, Message) :-
-    master_url(MasterUrl),
-    format(atom(Url), "~w/api/agent-process/log", [MasterUrl]),
-    format(atom(MsgAtom), "~w", [Message]),
-    atom_json_dict(Payload, _{agent: Name, message: MsgAtom}, []),
-    catch(
-        (http_open(Url, Reply, [
-            method(post),
-            post(atom('application/json', Payload)),
-            status_code(_Code),
-            timeout(2)
-        ]),
-        read_string(Reply, _, _),
-        close(Reply)),
-        _Error, true
-    ).
-
-%% bb_read_remote(+Pattern) — Read from master's blackboard
-bb_read_remote(Pattern) :-
-    master_url(MasterUrl),
-    term_to_atom(Pattern, PatternAtom),
-    format(atom(Url), "~w/api/agent-process/bb/read?pattern=~w", [MasterUrl, PatternAtom]),
-    catch(
-        (http_open(Url, Reply, [status_code(Code), timeout(5)]),
-         (Code =:= 200 ->
-            json_read_dict(Reply, Dict),
-            close(Reply),
-            (get_dict(found, Dict, true) ->
-                get_dict(value, Dict, ValueStr),
-                term_to_atom(Pattern, ValueStr)
-            ; fail)
-         ;
-            close(Reply), fail
-         )),
-        _Error, fail
-    ).
-
-%% bb_write_remote(+Tuple) — Write to master's blackboard
-bb_write_remote(Tuple) :-
-    master_url(MasterUrl),
-    format(atom(Url), "~w/api/agent-process/bb/write", [MasterUrl]),
-    term_to_atom(Tuple, TupleAtom),
-    atom_json_dict(Payload, _{tuple: TupleAtom}, []),
-    catch(
-        (http_open(Url, Reply, [
-            method(post),
-            post(atom('application/json', Payload)),
-            status_code(_Code),
-            timeout(5)
-        ]),
-        read_string(Reply, _, _),
-        close(Reply)),
-        _Error, true
-    ).
-
-%% bb_remove_remote(+Pattern) — Remove from master's blackboard
-bb_remove_remote(Pattern) :-
-    master_url(MasterUrl),
-    format(atom(Url), "~w/api/agent-process/bb/remove", [MasterUrl]),
-    term_to_atom(Pattern, PatternAtom),
-    atom_json_dict(Payload, _{pattern: PatternAtom}, []),
-    catch(
-        (http_open(Url, Reply, [
-            method(post),
-            post(atom('application/json', Payload)),
-            status_code(_Code),
-            timeout(5)
-        ]),
-        read_string(Reply, _, _),
-        close(Reply)),
-        _Error, true
-    ).
