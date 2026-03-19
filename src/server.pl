@@ -55,6 +55,14 @@ user:message_hook(_, informational, _) :- !.
 :- http_handler(root(api/peers/sync),      api_peer_sync,     [method(post)]).
 :- http_handler(root(api/remote/agents),   api_remote_agents,  []).
 :- http_handler(root(api/remote/receive),  api_remote_receive, [method(post)]).
+%% Agent Process IPC endpoints (master ↔ agent processes)
+:- http_handler(root(api/'agent-process'/register),  api_agent_proc_register, [method(post)]).
+:- http_handler(root(api/'agent-process'/relay),     api_agent_proc_relay,    [method(post)]).
+:- http_handler(root(api/'agent-process'/broadcast), api_agent_proc_broadcast,[method(post)]).
+:- http_handler(root(api/'agent-process'/log),       api_agent_proc_log,      [method(post)]).
+:- http_handler(root(api/'agent-process'/bb/read),   api_agent_proc_bb_read,  []).
+:- http_handler(root(api/'agent-process'/bb/write),  api_agent_proc_bb_write, [method(post)]).
+:- http_handler(root(api/'agent-process'/bb/remove), api_agent_proc_bb_remove,[method(post)]).
 :- http_handler(root(static),  serve_static, [prefix]).
 
 %% ============================================================
@@ -69,12 +77,19 @@ main :-
     format("Node: ~w | Port: ~w~n", [NodeName, Port]),
     bb_init,
     federation:fed_init(NodeName),
+    %% Set master URL and agent file for engine process management
+    format(atom(MasterUrl), "http://localhost:~w", [Port]),
+    engine:set_master_url(MasterUrl),
     (AgentFile \= '' ->
         format("Loading agents from: ~w~n", [AgentFile]),
         loader:load_agents(AgentFile),
+        engine:set_agent_file(AgentFile),
         findall(N, loader:agent_def(N, _), AllNames),
         format("Agents defined: ~w~n", [AllNames]),
         assert(current_agent_file(AgentFile)),
+        %% Start HTTP server BEFORE starting agents (agents need to register)
+        http_server(http_dispatch, [port(Port)]),
+        format("Server started, launching agent processes...~n"),
         %% Start only filtered agents, or all if no filter
         (AgentFilter \= [] ->
             format("Starting agents: ~w~n", [AgentFilter]),
@@ -84,10 +99,10 @@ main :-
         )
     ;
         format("No agent file specified. Use the web UI to load agents.~n"),
-        assert(current_agent_file(''))
+        assert(current_agent_file('')),
+        http_server(http_dispatch, [port(Port)]),
+        format("Server started.~n~n")
     ),
-    http_server(http_dispatch, [port(Port)]),
-    format("Server started.~n~n"),
     %% Handle SIGINT/SIGTERM for clean shutdown (e.g. CTRL+C in Docker)
     on_signal(int, _, signal_stop),
     on_signal(term, _, signal_stop),
@@ -609,6 +624,118 @@ api_remote_receive(Request) :-
     catch(
         (term_string(Content, ContentStr),
          communication:deliver_remote(From, To, Content),
+         reply_json_dict(_{ok: true})),
+        Error,
+        (term_to_atom(Error, E),
+         reply_json_dict(_{ok: false, error: E}))
+    ).
+
+%% ============================================================
+%% AGENT PROCESS IPC HANDLERS
+%% ============================================================
+
+%% POST /api/agent-process/register - Agent process registers itself with master
+%%   Body: {"name": "agent_name", "url": "http://localhost:PORT", "port": PORT}
+api_agent_proc_register(Request) :-
+    cors_enable,
+    http_read_json_dict(Request, Dict),
+    atom_string(Name, Dict.name),
+    atom_string(Url, Dict.url),
+    %% Update the process URL (it may have been set during spawn, confirm it)
+    retractall(engine:agent_process_url(Name, _)),
+    assert(engine:agent_process_url(Name, Url)),
+    format(user_error, "[Master] Agent process registered: ~w at ~w~n", [Name, Url]),
+    reply_json_dict(_{ok: true}).
+
+%% POST /api/agent-process/relay - Relay a message from one agent process to another
+%%   Body: {"from": "sender", "to": "receiver", "content": "term_string"}
+api_agent_proc_relay(Request) :-
+    cors_enable,
+    http_read_json_dict(Request, Dict),
+    atom_string(From, Dict.from),
+    atom_string(To, Dict.to),
+    atom_string(ContentStr, Dict.content),
+    catch(
+        (term_to_atom(Content, ContentStr),
+         %% Route to agent process or federation
+         engine:send_message_to_agent(From, To, Content),
+         reply_json_dict(_{ok: true})),
+        Error,
+        (term_to_atom(Error, E),
+         reply_json_dict(_{ok: false, error: E}))
+    ).
+
+%% POST /api/agent-process/broadcast - Broadcast from agent to all others
+%%   Body: {"from": "sender", "content": "term_string"}
+api_agent_proc_broadcast(Request) :-
+    cors_enable,
+    http_read_json_dict(Request, Dict),
+    atom_string(From, Dict.from),
+    atom_string(ContentStr, Dict.content),
+    catch(
+        (term_to_atom(Content, ContentStr),
+         %% Send to all agent processes except sender
+         forall(
+            (engine:agent_process_url(To, _), To \= From),
+            engine:send_message_to_agent(From, To, Content)
+         ),
+         reply_json_dict(_{ok: true})),
+        Error,
+        (term_to_atom(Error, E),
+         reply_json_dict(_{ok: false, error: E}))
+    ).
+
+%% POST /api/agent-process/log - Forward log entry from agent process to master
+%%   Body: {"agent": "name", "message": "log text"}
+api_agent_proc_log(Request) :-
+    cors_enable,
+    http_read_json_dict(Request, Dict),
+    atom_string(Name, Dict.agent),
+    atom_string(Message, Dict.message),
+    get_time(Stamp), T is truncate(Stamp * 1000),
+    assert(engine:agent_log_entry(Name, T, Message)),
+    reply_json_dict(_{ok: true}).
+
+%% GET /api/agent-process/bb/read?pattern=TERM - Read from blackboard
+api_agent_proc_bb_read(Request) :-
+    cors_enable,
+    http_parameters(Request, [pattern(PatternStr, [])]),
+    catch(
+        (term_to_atom(Pattern, PatternStr),
+         (blackboard:bb_get(Pattern) ->
+            term_to_atom(Pattern, ValueStr),
+            reply_json_dict(_{found: true, value: ValueStr})
+         ;
+            reply_json_dict(_{found: false})
+         )),
+        _Error,
+        reply_json_dict(_{found: false})
+    ).
+
+%% POST /api/agent-process/bb/write - Write to blackboard
+%%   Body: {"tuple": "term_string"}
+api_agent_proc_bb_write(Request) :-
+    cors_enable,
+    http_read_json_dict(Request, Dict),
+    atom_string(TupleStr, Dict.tuple),
+    catch(
+        (term_to_atom(Tuple, TupleStr),
+         blackboard:bb_put(Tuple),
+         reply_json_dict(_{ok: true})),
+        Error,
+        (term_to_atom(Error, E),
+         reply_json_dict(_{ok: false, error: E}))
+    ).
+
+%% POST /api/agent-process/bb/remove - Remove from blackboard
+%%   Body: {"pattern": "term_string"}
+api_agent_proc_bb_remove(Request) :-
+    cors_enable,
+    http_read_json_dict(Request, Dict),
+    atom_string(PatternStr, Dict.pattern),
+    catch(
+        (term_to_atom(Pattern, PatternStr),
+         blackboard:bb_take(Pattern),
          reply_json_dict(_{ok: true})),
         Error,
         (term_to_atom(Error, E),

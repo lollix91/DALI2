@@ -1,33 +1,69 @@
 # DALI2 Language Reference
 
 Complete reference for the DALI2 agent-oriented programming language.
+DALI2 uses **DALI-compatible syntax** — the same operators and suffixes as the original DALI framework — while adding new features for modern multi-agent systems.
+
+## Syntax Overview
+
+DALI2 supports the original DALI syntax with an `agent:` prefix for multi-agent files:
+
+| Construct | DALI Syntax | DALI2 Syntax (with agent prefix) |
+|-----------|-------------|----------------------------------|
+| External event | `eventE(X) :> body.` | `agent:eventE(X) :> body.` |
+| Internal event | `eventI(X) :> body.` | `agent:eventI(X) :> body.` |
+| Internal config | `internal_event(ev, 3, forever, true, stop).` | `agent:internal_event(ev, 3, forever, true, stop).` |
+| Action definition | `actionA(X) :- body.` | `agent:actionA(X) :- body.` |
+| Present event | `condN :- body.` | `agent:condN :- body.` |
+| Condition-action | `cond :< action.` | `agent:cond :< action.` |
+| Export past | `head ~/ past1, past2.` | `agent:head ~/ past1, past2.` |
+| Export past (not done) | `head </ past1, past2.` | `agent:head </ past1, past2.` |
+| Export past (done) | `head ?/ past1, past2.` | `agent:head ?/ past1, past2.` |
+| Constraint | `:~ condition.` | `agent :~ condition.` |
+| Past lifetime | `past_event(ev, 60).` | `agent:past_event(ev, 60).` |
+| Remember | `remember_event(ev, 3600).` | `agent:remember_event(ev, 3600).` |
+| Remember limit | `remember_event_mod(ev, number(5), last).` | `agent:remember_event_mod(ev, number(5), last).` |
+| Obtain goal | `obt_goal(goal) :- plan.` | `agent:obt_goal(goal) :- plan.` |
+| Test goal | `test_goal(goal) :- plan.` | `agent:test_goal(goal) :- plan.` |
+| Message sending | `messageA(dest, send_message(content, Me))` | Same (in body) or `send(dest, content)` |
+| Past check | `evp(event)` / `eventP(args)` | Same (in body) or `has_past(event)` |
+| Residue goal | `tenta_residuo(goal)` | Same (in body) or `achieve(goal)` |
+
+**New DALI2 features** (no DALI equivalent, marked with **[NEW]**):
+- `agent:every(Seconds, Goal).` — periodic tasks **[NEW]**
+- `agent:when(Condition) :- Body.` — condition monitors **[NEW]**
+- `agent:helper(Head) :- Body.` — utility predicates **[NEW]**
+- `agent:on_proposal(Action) :- Body.` — action proposal handlers **[NEW]**
+- `agent:learn_from(Event, Outcome) :- Body.` — learning rules **[NEW]**
+- `agent:ontology(same_as(a, b)).` — inline ontology **[NEW]**
+- `agent:ontology_file('file.pl').` — external ontology file **[NEW]**
+- `ask_ai(Context, Result)` — AI Oracle integration **[NEW]**
+- `bb_read/bb_write/bb_remove` — blackboard operations **[NEW]**
 
 ## Table of Contents
 
 - [Agent Declaration](#agent-declaration)
-- [Reactive Rules (`on`)](#reactive-rules)
-- [Internal Events (`internal`)](#internal-events)
-- [Periodic Tasks (`every`)](#periodic-tasks)
-- [Condition Monitors (`when`)](#condition-monitors)
-- [Condition-Action Rules (`on_change`)](#condition-action-rules)
-- [Present/Environment Events (`on_present`)](#presentenvironment-events)
-- [Multi-Events (`on_all`)](#multi-events)
-- [Constraints (`constraint`)](#constraints)
-- [Goals (`goal`)](#goals)
+- [Reactive Rules (`:>` / `on`)](#reactive-rules)
+- [Internal Events (`:>` + `I` suffix / `internal`)](#internal-events)
+- [Periodic Tasks (`every`)](#periodic-tasks) **[NEW]**
+- [Condition Monitors (`when`)](#condition-monitors) **[NEW]**
+- [Condition-Action Rules (`:<` / `on_change`)](#condition-action-rules)
+- [Present/Environment Events (`N` suffix / `on_present`)](#presentenvironment-events)
+- [Multi-Events (conjunction / `on_all`)](#multi-events)
+- [Constraints (`:~` / `constraint`)](#constraints)
+- [Goals (`obt_goal`/`test_goal` / `goal`)](#goals)
 - [Tell/Told Communication Filtering](#telltold-communication-filtering)
 - [FIPA Message Types](#fipa-message-types)
-- [Action Proposals (`on_proposal`)](#action-proposals)
+- [Action Proposals (`on_proposal`)](#action-proposals) **[NEW]**
 - [Past Event Lifetime & Remember](#past-event-lifetime--remember)
-- [Export Past Rules (`on_past`)](#export-past-rules)
+- [Export Past Rules (`~/` `</` `?/` / `on_past`)](#export-past-rules)
 - [Residue Goals](#residue-goals)
-- [Ontology Declarations (`ontology`)](#ontology-declarations)
-- [Learning Rules (`learn_from`)](#learning-rules)
-- [Actions (`do`)](#actions)
+- [Ontology Declarations (`ontology`)](#ontology-declarations) **[NEW]**
+- [Learning Rules (`learn_from`)](#learning-rules) **[NEW]**
+- [Actions (`A` suffix / `do`)](#actions)
 - [Beliefs (`believes`)](#beliefs)
-- [Helpers (`helper`)](#helpers)
+- [Helpers (`helper`)](#helpers) **[NEW]**
 - [DSL Predicates Reference](#dsl-predicates-reference)
 - [Agent Lifecycle](#agent-lifecycle)
-- [Comparison with DALI 1.0 Syntax](#comparison-with-dali-10-syntax)
 
 ---
 
@@ -59,7 +95,15 @@ All agents in a single `.pl` file share the same file. Each rule is prefixed wit
 
 React to external events (messages from other agents or injected events).
 
-**Syntax:**
+**DALI Syntax (primary):**
+
+```prolog
+agent:eventE(Args) :> Body.
+```
+
+The `E` suffix marks external events. The `:>` operator separates the head from the body. The suffix is stripped when matching incoming events (e.g., `readingE(V)` matches incoming event `reading(V)`).
+
+**DALI2 Syntax (also supported):**
 
 ```prolog
 agent:on(EventPattern) :- Body.
@@ -68,30 +112,41 @@ agent:on(EventPattern) :- Body.
 **Examples:**
 
 ```prolog
-%% React to a simple event
-sensor:on(reading(Value)) :-
+%% DALI syntax — react to a simple event
+sensor:readingE(Value) :>
     log("Sensor reading: ~w", [Value]),
     send(analyzer, data(Value)).
 
-%% React to a message with pattern matching
-coordinator:on(alarm(Type, Location)) :-
+%% DALI syntax — react with pattern matching
+coordinator:alarmE(Type, Location) :>
     log("Alarm: ~w at ~w", [Type, Location]),
     assert_belief(active_alarm(Type, Location)),
-    send(responder, respond(Location, Type)).
+    messageA(responder, send_message(respond(Location, Type), coordinator)).
 
-%% React without a body (just acknowledge)
-logger:on(ping).
+%% DALI2 syntax — also works
+logger:on(ping) :- log("Ping received").
 ```
 
-When a message arrives, the engine matches it against all `on` handlers for the receiving agent. If the agent has ontology declarations, matching is ontology-aware (e.g., `on(hot(X))` will also match `warm(X)` if `same_as(hot, warm)` is declared).
+When a message arrives, the engine matches it against all handlers for the receiving agent. If the agent has ontology declarations, matching is ontology-aware (e.g., `alarmE(hot(X))` will also match `alarm(warm(X))` if `same_as(hot, warm)` is declared).
+
+**Body predicates:** Inside `:>` bodies, you can use both DALI-style predicates (`messageA`, `eventP`, `actionA`, `evp`, `tenta_residuo`) and DALI2-style predicates (`send`, `has_past`, `do`, `achieve`). They are equivalent.
 
 ---
 
 ## Internal Events
 
-Proactive events that fire automatically based on conditions. These are the DALI2 equivalent of DALI's `internal_event/5`.
+Proactive events that fire automatically based on conditions.
 
-**Syntax:**
+**DALI Syntax (primary):**
+
+```prolog
+agent:eventI(Args) :> Body.                                          %% handler
+agent:internal_event(Event, Period, Repetition, StartCond, StopCond). %% configuration
+```
+
+The `I` suffix marks internal events. The handler (`:>`) defines what to execute, and `internal_event/5` configures timing and conditions.
+
+**DALI2 Syntax (also supported):**
 
 ```prolog
 agent:internal(Event) :- Body.                     %% forever (default)
@@ -926,7 +981,7 @@ All standard Prolog predicates are available: arithmetic (`is`, `>`, `<`, `>=`, 
 
 ## Agent Lifecycle
 
-Each agent runs as a thread with a cycle-based event loop:
+Each agent runs as a **separate OS process** with a cycle-based event loop. The master server spawns one `swipl` process per agent, each with its own HTTP server for receiving messages.
 
 ```
 ┌─────────────────────────────────────────┐
@@ -963,34 +1018,38 @@ Past events can have **lifetimes** (via `past_lifetime`) and move to a **remembe
 
 ---
 
-## Comparison with DALI 1.0 Syntax
+## DALI Syntax in DALI2
 
-| Feature | DALI 1.0 (SICStus) | DALI2 (SWI-Prolog) |
-|---------|---------------------|---------------------|
-| External event | `eventE(X) :> body.` | `agent:on(event(X)) :- body.` |
-| Internal event | `internal_event(ev, 3, forever, true, until_cond(past(ev)))` | `agent:internal(ev, [forever, interval(3)]) :- body.` |
-| Internal with time | `internal_event(ev, 3, forever, true, in_date(D1, D2))` | `agent:internal(ev, [between(time(H1,M1), time(H2,M2))]) :- body.` |
-| Internal change cond | `internal_event(ev, 3, 5, change([fact]), forever)` | `agent:internal(ev, [times(5), change([fact])]) :- body.` |
-| Condition-action | `cond(X) :< action(X).` | `agent:on_change(cond(X)) :- action(X).` |
-| Present event | `en(event)` with suffix N | `agent:on_present(condition) :- body.` |
-| Multiple events | `mul([eve, event1, event2])` | `agent:on_all([event1, event2]) :- body.` |
-| Constraint | `:~ constraint.` | `agent:constraint(condition) :- handler.` |
-| Told rule | `told(_, inform(_), 70) :- true.` | `agent:told(inform(_), 70).` |
-| Tell rule | `tell(_, _, send_message(_)) :- true.` | `agent:tell(send_message(_)).` |
-| Send message | `messageA(dest, send_message(ev(X), Me))` | `send(dest, ev(X))` |
-| FIPA confirm | `a(message(Ag, confirm(X, A)))` | `send(Ag, confirm(X))` |
-| FIPA query_ref | `call_query_ref(X, N, Ag)` | `send(Ag, query_ref(X))` |
-| FIPA propose | `a(message(Ag, propose(A, C, Me)))` | `send(Ag, propose(A))` |
-| Past check | `evp(event)` / `clause(past(event,_,_),_)` | `has_past(event)` |
-| Past lifetime | `past_event(event, 60)` | `agent:past_lifetime(event, 60).` |
-| Remember | `remember_event(event, 3600)` | `agent:remember_lifetime(event, 3600).` |
-| Export past (~/) | `head ~/ body` | `agent:on_past([events]) :- body.` |
-| Export past (</) | `head </ body` | `agent:on_past_not_done(action, [events]) :- body.` |
-| Export past (?/) | `head ?/ body` | `agent:on_past_done(action, [events]) :- body.` |
-| Residue goal | `tenta_residuo(goal)` | `achieve(goal)` (auto-residue) |
-| Belief check | `clause(isa(fact,_,_),_)` | `believes(fact)` |
-| Obtaining goal | `obt_goal(goal)` | `agent:goal(achieve, goal) :- plan.` |
-| Test goal | `test_goal(goal)` | `agent:goal(test, goal) :- plan.` |
-| Ontology | `meta/3` with OWL, `eq_property`, `same_as` | `agent:ontology(same_as(a, b)).` + `agent:ontology_file('file.pl').` |
-| Learning | `learning.pl` + `learning_constraints.pl` | `agent:learn_from(event, outcome) :- condition.` |
-| Action | Suffix A: `actionA(X) :- body.` | `agent:do(action(X)) :- body.` |
+DALI2 now uses the **same syntax** as the original DALI, with an `agent:` prefix for multi-agent files. Both DALI and DALI2 syntax are accepted by the loader.
+
+| Feature | DALI (SICStus) | DALI2 (SWI-Prolog) — DALI syntax | DALI2 — alternative syntax |
+|---------|----------------|----------------------------------|---------------------------|
+| External event | `eventE(X) :> body.` | `agent:eventE(X) :> body.` | `agent:on(event(X)) :- body.` |
+| Internal event | `eventI(X) :> body.` + `internal_event/5` | `agent:eventI(X) :> body.` + `agent:internal_event/5` | `agent:internal(ev, [opts]) :- body.` |
+| Condition-action | `cond :< action.` | `agent:cond :< action.` | `agent:on_change(cond) :- action.` |
+| Present event | suffix N: `condN :- body.` | `agent:condN :- body.` | `agent:on_present(cond) :- body.` |
+| Multi-events | `ev1E, ev2E :> body.` | `agent:ev1E, ev2E :> body.` | `agent:on_all([ev1, ev2]) :- body.` |
+| Constraint | `:~ constraint.` | `agent :~ constraint.` | `agent:constraint(cond) :- handler.` |
+| Export past (~/) | `head ~/ past1, past2.` | `agent:head ~/ past1, past2.` | `agent:on_past([events]) :- body.` |
+| Export past (</) | `head </ past1, past2.` | `agent:head </ past1, past2.` | `agent:on_past_not_done(action, [events]) :- body.` |
+| Export past (?/) | `head ?/ past1, past2.` | `agent:head ?/ past1, past2.` | `agent:on_past_done(action, [events]) :- body.` |
+| Action definition | `actionA(X) :- body.` | `agent:actionA(X) :- body.` | `agent:do(action(X)) :- body.` |
+| Obtain goal | `obt_goal(goal)` | `agent:obt_goal(goal) :- plan.` | `agent:goal(achieve, goal) :- plan.` |
+| Test goal | `test_goal(goal)` | `agent:test_goal(goal) :- plan.` | `agent:goal(test, goal) :- plan.` |
+| Past lifetime | `past_event(ev, 60).` | `agent:past_event(ev, 60).` | `agent:past_lifetime(ev, 60).` |
+| Remember | `remember_event(ev, 3600).` | `agent:remember_event(ev, 3600).` | `agent:remember_lifetime(ev, 3600).` |
+| Remember limit | `remember_event_mod(ev, number(5), last).` | `agent:remember_event_mod(ev, number(5), last).` | `agent:remember_limit(ev, 5, last).` |
+| Told | `told(_, pattern, priority).` | `agent:told(_, pattern, priority).` | `agent:told(pattern, priority).` |
+| Tell | `tell(_, _, pattern).` | `agent:tell(_, _, pattern).` | `agent:tell(pattern).` |
+| Send message | `messageA(dest, send_message(content, Me))` | Same (in body) | `send(dest, content)` |
+| Past check | `evp(event)` / `eventP(args)` | Same (in body) | `has_past(event)` |
+| Residue goal | `tenta_residuo(goal)` | Same (in body) | `achieve(goal)` |
+| Belief check | `clause(isa(fact,_,_),_)` | Same (in body) | `believes(fact)` |
+| Ontology | `meta/3` + OWL | `agent:ontology(same_as(a,b)).` **[NEW]** | — |
+| Learning | `learning.pl` | `agent:learn_from(event, outcome) :- cond.` **[NEW]** | — |
+| Periodic | — | `agent:every(seconds, goal).` **[NEW]** | — |
+| Condition monitor | — | `agent:when(condition) :- body.` **[NEW]** | — |
+| Helper | — | `agent:helper(head) :- body.` **[NEW]** | — |
+| Proposal handler | — | `agent:on_proposal(action) :- body.` **[NEW]** | — |
+| AI Oracle | — | `ask_ai(context, result)` (in body) **[NEW]** | — |
+| Blackboard | Linda (TCP) | `bb_read`/`bb_write`/`bb_remove` (in body) **[NEW]** | — |

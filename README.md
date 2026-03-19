@@ -1,18 +1,19 @@
 # DALI2
 
-> Simplified Multi-Agent System Framework built on SWI-Prolog
+> Multi-Agent System Framework built on SWI-Prolog — DALI-compatible syntax, process-based agents
 
-DALI2 is a complete rewrite of the [DALI](https://github.com/AAAI-DISIM-UnivAQ/DALI) multi-agent system framework, designed for simplicity and ease of use.
+DALI2 is the evolution of the [DALI](https://github.com/AAAI-DISIM-UnivAQ/DALI) multi-agent system framework, now running on SWI-Prolog with DALI-compatible syntax and a process-per-agent architecture.
 
 ## Key Features
 
-- **Single-file agent definitions** — define all agents in one `.pl` file
+- **DALI-compatible syntax** — uses the same operators (`:>`, `:<`, `~/`, `</`, `?/`) and suffixes (`E`, `I`, `A`, `N`, `P`) as the original DALI
+- **Single-file agent definitions** — define all agents in one `.pl` file (with `agent:` prefix)
 - **Full DALI feature set** — reactive rules, internal events, goals, constraints, learning, ontologies, tell/told filtering, and more
+- **Process-per-agent architecture** — each agent runs as a separate OS process (not just a thread)
 - **Integrated web UI** — dashboard, log viewer, message sender, agent inspector
 - **Docker-ready** — runs in a container, no local installation needed
-- **Single-process architecture** — all agents run as threads in one SWI-Prolog instance
-- **Simplified syntax** — no tokenizer, no intermediate files, no E/I/A suffixes
-- **In-memory blackboard** — no TCP-based Linda server needed
+- **HTTP-based IPC** — agent processes communicate via HTTP through a central master server
+- **New features** — AI Oracle (ChatGPT), periodic tasks, condition monitors, helpers, blackboard, federation
 
 **Documentation:** [RULES.md](RULES.md) (language reference) · [EXAMPLES.md](EXAMPLES.md) (examples guide)
 
@@ -246,32 +247,85 @@ run.bat
 
 ## Agent Language
 
-Agents are defined in a single `.pl` file. Here are the key constructs — see **[RULES.md](RULES.md)** for the complete language reference (all 24 rule types and 30+ DSL predicates) and **[EXAMPLES.md](EXAMPLES.md)** for walkthroughs with test commands.
+Agents are defined in a single `.pl` file using DALI-compatible syntax. Each agent is declared with `:- agent(Name, Options).` and rules are prefixed with `agent:`.
+
+DALI2 supports **both** the original DALI syntax (`:>`, `:<`, `~/`, `</`, `?/` operators with `E`/`I`/`A`/`N`/`P` suffixes) and the DALI2-extended syntax. See **[RULES.md](RULES.md)** for the complete reference and **[EXAMPLES.md](EXAMPLES.md)** for walkthroughs.
 
 ```prolog
 :- agent(my_agent, [cycle(1)]).
 
-%% React to events/messages
-my_agent:on(alarm(Type, Location)) :-
+%% React to external events (DALI syntax: E suffix + :> operator)
+my_agent:alarmE(Type, Location) :>
     log("Alarm: ~w at ~w", [Type, Location]),
     assert_belief(active(Type, Location)),
-    send(responder, dispatch(Type, Location)).
+    messageA(responder, send_message(dispatch(Type, Location), my_agent)).
 
-%% Internal event — proactive, fires when body conditions are met
-my_agent:internal(check_status, [forever, interval(5)]) :-
+%% Internal event (DALI syntax: I suffix + :> operator + internal_event/5)
+my_agent:check_statusI :>
     believes(active(Type, Location)),
     log("Still active: ~w at ~w", [Type, Location]).
+my_agent:internal_event(check_status, 5, forever, true, forever).
+
+%% Condition-action rule (DALI :< operator, edge-triggered)
+my_agent:believes(active(_, _)) :< (
+    log("Alert condition activated!"),
+    send(logger, log_event(alert_active, my_agent))
+).
+
+%% Export past (DALI ~/ operator)
+my_agent:send(logger, report(Type, Loc)) ~/
+    alarm(Type, Loc), response(Loc).
+
+%% Constraint (DALI :~ operator)
+my_agent :~ believes(active_count(N)), N < 100.
 
 %% Tell/told communication filtering (priority queue)
-my_agent:told(alarm(_), 100).    %% Accept alarms (high priority)
-my_agent:told(status(_), 50).    %% Accept status (lower priority)
-my_agent:tell(report(_)).        %% Only allowed to send reports
+my_agent:told(alarm(_,_), 100).    %% Accept alarms (high priority)
+my_agent:told(status(_), 50).      %% Accept status (lower priority)
+my_agent:tell(report(_)).          %% Only allowed to send reports
+
+%% Past event lifetime (DALI syntax)
+my_agent:past_event(alarm(_,_), 60).
+my_agent:remember_event(alarm(_,_), 3600).
+
+%% Obtain goal (DALI obt_goal syntax)
+my_agent:obt_goal(believes(all_clear)) :-
+    send(coordinator, check_status_request).
+
+%% Action definition (DALI A suffix)
+my_agent:dispatchA(Type, Location) :-
+    log("Dispatching for ~w at ~w", [Type, Location]).
 
 %% Initial beliefs
 my_agent:believes(status(idle)).
 ```
 
-Other rule types: `every` (periodic), `when` (monitor), `on_change` (edge-triggered), `on_present` (environment), `on_all` (multi-event), `constraint`, `goal`, `on_proposal`, `on_past`, `learn_from`, `ontology`, and more — all documented in [RULES.md](RULES.md).
+**New DALI2 features** (using similar style): `every` (periodic), `when` (condition monitor), `helper` (utility predicates), `on_proposal` (action proposals), `learn_from` (learning), `ontology`/`ontology_file`, `ask_ai` (AI Oracle), `bb_read`/`bb_write`/`bb_remove` (blackboard).
+
+## Architecture: Process-per-Agent
+
+Each agent runs as a **separate OS process** (not just a thread). The master server (`server.pl`) spawns one `swipl` process per agent, each with its own HTTP server. Communication between agents flows through the master server via HTTP.
+
+```
+┌──────────────────────────────────────────┐
+│            Master Server (:8080)         │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ │
+│  │ Web UI   │ │Blackboard│ │Federation│ │
+│  │ REST API │ │ (central)│ │  (HTTP)  │ │
+│  └──────────┘ └──────────┘ └──────────┘ │
+│          ↕ HTTP IPC ↕                    │
+├──────────┬───────────┬───────────────────┤
+│ Agent 1  │ Agent 2   │ Agent N           │
+│ :9001    │ :9002     │ :900N             │
+│ (swipl)  │ (swipl)   │ (swipl)           │
+└──────────┴───────────┴───────────────────┘
+```
+
+Each agent process:
+- Has its own event loop, beliefs, past memory, and goals
+- Receives messages via its HTTP endpoint
+- Sends messages to other agents via the master's relay API
+- Accesses the central blackboard via the master's blackboard API
 
 ## AI Oracle (ChatGPT Integration)
 
@@ -288,7 +342,7 @@ The API key is **optional** — if not set, `ai_available` fails and `ask_ai` re
 ### Usage in agents
 
 ```prolog
-my_agent:on(analyze(Data)) :-
+my_agent:analyzeE(Data) :>
     ( ai_available ->
         ask_ai(analyze_situation(Data), Advice),
         log("AI says: ~w", [Advice]),
@@ -347,34 +401,41 @@ The web interface at `http://localhost:8080` provides:
 
 ## Comparison with DALI
 
-| Aspect | DALI | DALI2 |
-|--------|------|-------|
-| Source files | ~20 | 7 |
-| Agent definition | Multiple files (instances.json + type files) | Single .pl file |
-| Process model | Separate process per agent + Linda server | Multi-threaded (single or multi-node) |
-| Communication | TCP sockets (Linda) | In-memory blackboard + HTTP federation |
-| Tokenizer | Complex (tokefun + togli_var + metti_var) | None (direct term_expansion) |
+| Aspect | DALI (SICStus) | DALI2 (SWI-Prolog) |
+|--------|----------------|---------------------|
+| Source files | ~20 | 8 |
+| Agent definition | Multiple files (instances + type files) | Single `.pl` file (multi-agent) |
+| Process model | Separate process per agent + Linda server | **Separate OS process per agent** + HTTP IPC |
+| Communication | TCP sockets (Linda) | HTTP-based IPC + federation |
+| Tokenizer | Complex (tokefun + togli_var + metti_var) | None (direct parsing with DALI operators) |
 | UI | Separate Python project (dalia) | Integrated web UI |
-| AI integration | External Python TCP service | Built-in (direct OpenAI API calls) |
+| AI integration | External Python TCP service | Built-in (direct OpenAI API calls) **[NEW]** |
 | Docker setup | Complex (SICStus install) | Simple (swipl base image) |
-| Event syntax | `eventE(X) :> body.` | `agent:on(event(X)) :- body.` |
-| Message sending | `messageA(dest, send_message(ev(X), Me))` | `send(dest, ev(X))` |
-| Internal events | `internal_event/5` with `forever`/`until_cond`/`in_date` | `agent:internal(event, [options]) :- body.` with `interval`/`trigger`/`change` |
-| Tell/told | `told(_,inform(_),70)` in communication.con | `agent:told(pattern, priority).` (priority queue + AI oracle filter) |
-| FIPA messages | `confirm`/`disconfirm`/`propose`/`query_ref`/etc. | `send(to, confirm(fact))` — full FIPA-ACL support |
-| Action proposal | `propose(A,C,Ag)` + `call_propose` | `agent:on_proposal(action) :- body.` |
-| Past lifetime | `past_event(ev, 60)` + `remember_event(ev, 3600)` | `agent:past_lifetime(ev, 60).` + `remember_lifetime`/`remember_limit` |
-| Export past (~/) | `head ~/ body` | `agent:on_past([events]) :- body.` |
-| Export past (</) | `head </ body` | `agent:on_past_not_done(action, [events]) :- body.` |
-| Export past (?/) | `head ?/ body` | `agent:on_past_done(action, [events]) :- body.` |
-| Residue goals | `tenta_residuo(goal)` | `achieve(goal)` (auto-queued as residue) |
-| Condition-action | `cond :< action.` | `agent:on_change(cond) :- body.` |
-| Present events | `en(X)` with suffix N | `agent:on_present(cond) :- body.` |
-| Multi-events | `mul/1` | `agent:on_all([e1, e2]) :- body.` |
-| Constraints | `:~ constraint.` | `agent:constraint(cond) :- body.` |
-| Ontologies | `meta/3` + OWL files | `agent:ontology(same_as(a,b)).` + `agent:ontology_file('f.pl').` |
-| Learning | `learning.pl` + constraints | `agent:learn_from(event, outcome) :- body.` |
-| Goals | `obt_goal`/`test_goal` | `agent:goal(achieve/test, goal) :- plan.` |
+| Event syntax | `eventE(X) :> body.` | `agent:eventE(X) :> body.` (same syntax!) |
+| Message sending | `messageA(dest, send_message(ev(X), Me))` | `messageA(dest, send_message(ev(X), Me))` or `send(dest, ev(X))` |
+| Internal events | `internal_event/5` | `agent:eventI :> body.` + `agent:internal_event/5` (same!) |
+| Tell/told | `told(_,inform(_),70)` | `agent:told(inform(_), 70).` |
+| FIPA messages | `confirm`/`disconfirm`/`propose`/`query_ref` | `send(to, confirm(fact))` — full FIPA-ACL |
+| Action definition | `actionA(X) :- body.` | `agent:actionA(X) :- body.` (same syntax!) |
+| Action proposal | `propose(A,C,Ag)` + `call_propose` | `agent:on_proposal(action) :- body.` **[NEW]** |
+| Past lifetime | `past_event(ev, 60)` | `agent:past_event(ev, 60).` (same syntax!) |
+| Remember | `remember_event_mod(ev, number(5), last)` | `agent:remember_event_mod(ev, number(5), last).` (same!) |
+| Export past (~/) | `head ~/ body` | `agent:head ~/ body` (same operator!) |
+| Export past (</) | `head </ body` | `agent:head </ body` (same operator!) |
+| Export past (?/) | `head ?/ body` | `agent:head ?/ body` (same operator!) |
+| Residue goals | `tenta_residuo(goal)` | `tenta_residuo(goal)` or `achieve(goal)` |
+| Condition-action | `cond :< action.` | `agent:cond :< action.` (same operator!) |
+| Present events | `en(X)` with suffix N | `agent:condN :- body.` (same suffix!) |
+| Multi-events | conjunction with E-suffix | `agent:ev1E, ev2E :> body.` (same!) |
+| Constraints | `:~ constraint.` | `agent :~ constraint.` (same operator!) |
+| Ontologies | `meta/3` + OWL files | `agent:ontology(same_as(a,b)).` + `ontology_file` |
+| Learning | `learning.pl` + constraints | `agent:learn_from(event, outcome) :- body.` **[NEW]** |
+| Goals | `obt_goal`/`test_goal` | `agent:obt_goal(goal) :- plan.` / `test_goal` (same!) |
+| Periodic tasks | — | `agent:every(seconds, goal).` **[NEW]** |
+| Condition monitors | — | `agent:when(condition) :- body.` **[NEW]** |
+| Helpers | — | `agent:helper(head) :- body.` **[NEW]** |
+| AI Oracle | — | `ask_ai(context, result)` **[NEW]** |
+| Blackboard | Linda (TCP) | `bb_read`/`bb_write`/`bb_remove` (HTTP) **[NEW]** |
 
 ## License
 

@@ -39,10 +39,21 @@
 :- use_module(loader).
 :- use_module(ai_oracle).
 :- use_module(library(lists)).
+:- use_module(library(http/http_open)).
+:- use_module(library(http/http_json)).
+:- use_module(library(process)).
 
-%% Agent runtime state (thread-local per agent, but stored globally with agent name key)
+%% Process management state
+:- dynamic next_agent_port/1.
+:- dynamic master_url_setting/1.
+:- dynamic agent_file_setting/1.
+
+%% Agent runtime state
 :- dynamic agent_running/1.            % agent_running(Name)
-:- dynamic agent_thread/2.             % agent_thread(Name, ThreadId)
+:- dynamic agent_thread/2.             % agent_thread(Name, ThreadId) - legacy thread mode
+:- dynamic agent_process_pid/2.        % agent_process_pid(Name, Pid) - OS process PID
+:- dynamic agent_process_url/2.        % agent_process_url(Name, Url) - agent HTTP URL
+:- dynamic agent_process_port/2.       % agent_process_port(Name, Port)
 :- dynamic agent_log_entry/3.          % agent_log_entry(Name, Timestamp, Message)
 :- dynamic agent_past_event/4.         % agent_past_event(Name, Event, Timestamp, Source)
 :- dynamic agent_belief_rt/2.          % agent_belief_rt(Name, Fact)
@@ -77,7 +88,7 @@ stop_all :-
     findall(N, agent_running(N), Names),
     maplist(stop_agent, Names).
 
-%% start_agent(+Name) - Start a single agent thread
+%% start_agent(+Name) - Start a single agent as a separate OS process
 start_agent(Name) :-
     (agent_running(Name) ->
         log_agent(Name, "Agent already running")
@@ -85,36 +96,83 @@ start_agent(Name) :-
         loader:agent_def(Name, Options),
         assert(agent_running(Name)),
         bb_register_agent(Name, Options),
-        % Assert initial beliefs
-        forall(loader:agent_belief(Name, Fact),
-            assert(agent_belief_rt(Name, Fact))
+        %% Allocate a port for this agent process
+        allocate_agent_port(Name, AgentPort),
+        %% Get master URL and agent file
+        get_master_url(MasterUrl),
+        get_agent_file(AgentFile),
+        %% Spawn separate swipl process
+        format(atom(PortAtom), "~w", [AgentPort]),
+        format(atom(AgentUrl), "http://localhost:~w", [AgentPort]),
+        assert(agent_process_url(Name, AgentUrl)),
+        assert(agent_process_port(Name, AgentPort)),
+        process_create(
+            path(swipl),
+            ['-l', 'src/agent_process.pl', '-g', 'agent_main', '-t', 'halt',
+             '--', Name, PortAtom, MasterUrl, AgentFile],
+            [process(Pid), detached(true),
+             stdout(pipe(_StdOut)), stderr(pipe(_StdErr))]
         ),
-        % Load ontology files
-        load_agent_ontology_files(Name),
-        atom_concat('agent_', Name, ThreadId),
-        thread_create(agent_loop(Name, Options), _Tid,
-            [alias(ThreadId), detached(false)]),
-        assert(agent_thread(Name, ThreadId)),
-        log_agent(Name, "Agent started")
+        assert(agent_process_pid(Name, Pid)),
+        log_agent(Name, "Agent process started (PID: ~w, port: ~w)", [Pid, AgentPort])
     ).
 
-%% stop_agent(+Name) - Stop a single agent
+%% stop_agent(+Name) - Stop a single agent process
 stop_agent(Name) :-
     (agent_running(Name) ->
         retract(agent_running(Name)),
         bb_unregister_agent(Name),
+        %% Send stop command to agent process via HTTP
+        (agent_process_url(Name, Url) ->
+            format(atom(StopUrl), "~w/stop", [Url]),
+            catch(
+                (http_open(StopUrl, Reply, [method(post), timeout(3),
+                    post(atom('application/json', '{}')), status_code(_)]),
+                 read_string(Reply, _, _), close(Reply)),
+                _, true
+            )
+        ; true),
+        %% Kill process if still running
+        (agent_process_pid(Name, Pid) ->
+            retract(agent_process_pid(Name, Pid)),
+            catch(process_kill(Pid), _, true),
+            catch(process_wait(Pid, _, [timeout(3)]), _, true)
+        ; true),
+        %% Clean up legacy thread if present
         (agent_thread(Name, Tid) ->
             retract(agent_thread(Name, Tid)),
             catch(thread_signal(Tid, throw(stop_agent)), _, true),
             catch(thread_join(Tid, _), _, true)
         ; true),
+        retractall(agent_process_url(Name, _)),
+        retractall(agent_process_port(Name, _)),
         log_agent(Name, "Agent stopped")
     ; true).
 
-%% inject_event(+AgentName, +Event) - Inject an external event into an agent
+%% inject_event(+AgentName, +Event) - Inject an external event into an agent process
 inject_event(AgentName, Event) :-
-    with_mutex(blackboard_mutex,
-        assert(agent_event_queue(AgentName, Event))
+    (agent_process_url(AgentName, Url) ->
+        %% Send event to agent process via HTTP
+        term_to_atom(Event, EventAtom),
+        format(atom(EventUrl), "~w/event", [Url]),
+        atom_json_dict(Payload, _{event: EventAtom}, []),
+        catch(
+            (http_open(EventUrl, Reply, [
+                method(post),
+                post(atom('application/json', Payload)),
+                status_code(_Code),
+                timeout(5)
+            ]),
+            read_string(Reply, _, _),
+            close(Reply)),
+            Error,
+            log_agent(AgentName, "Failed to inject event: ~w", [Error])
+        )
+    ;
+        %% Fallback: legacy thread-based injection
+        with_mutex(blackboard_mutex,
+            assert(agent_event_queue(AgentName, Event))
+        )
     ),
     log_agent(AgentName, "Event injected: ~w", [Event]).
 
@@ -145,6 +203,81 @@ agent_goals(Name, Goals) :-
 %% all_logs(-Entries) - Get all log entries across all agents
 all_logs(Entries) :-
     findall(entry(Name, T, Msg), agent_log_entry(Name, T, Msg), Entries).
+
+%% ============================================================
+%% PROCESS MANAGEMENT HELPERS
+%% ============================================================
+
+%% allocate_agent_port(+Name, -Port) - Assign a unique port to an agent process
+allocate_agent_port(_Name, Port) :-
+    (retract(next_agent_port(P)) ->
+        Port = P,
+        NextPort is P + 1,
+        assert(next_agent_port(NextPort))
+    ;
+        Port = 9001,
+        assert(next_agent_port(9002))
+    ).
+
+%% get_master_url(-Url) - Get the master server URL
+get_master_url(Url) :-
+    (master_url_setting(U) -> Url = U ; Url = 'http://localhost:8080').
+
+%% set_master_url(+Url) - Set the master server URL
+set_master_url(Url) :-
+    retractall(master_url_setting(_)),
+    assert(master_url_setting(Url)).
+
+%% get_agent_file(-File) - Get the current agent file path
+get_agent_file(File) :-
+    (agent_file_setting(F) -> File = F ; File = '').
+
+%% set_agent_file(+File) - Set the current agent file path
+set_agent_file(File) :-
+    retractall(agent_file_setting(_)),
+    assert(agent_file_setting(File)).
+
+%% send_message_to_agent(+From, +To, +Content) - Route message to agent process
+send_message_to_agent(From, To, Content) :-
+    (agent_process_url(To, Url) ->
+        term_to_atom(Content, ContentAtom),
+        format(atom(MsgUrl), "~w/message", [Url]),
+        atom_json_dict(Payload, _{from: From, content: ContentAtom}, []),
+        catch(
+            (http_open(MsgUrl, Reply, [
+                method(post),
+                post(atom('application/json', Payload)),
+                status_code(_Code),
+                timeout(5)
+            ]),
+            read_string(Reply, _, _),
+            close(Reply)),
+            _Error, true
+        )
+    ;
+        %% Agent not running as process — try local blackboard delivery
+        communication:send(From, To, Content)
+    ).
+
+%% agent_beliefs_remote(+Name, -Beliefs) - Get beliefs from agent process via HTTP
+agent_beliefs_remote(Name, Beliefs) :-
+    (agent_process_url(Name, Url) ->
+        format(atom(BUrl), "~w/beliefs", [Url]),
+        catch(
+            (http_open(BUrl, Reply, [status_code(200), timeout(5)]),
+             json_read_dict(Reply, Dict),
+             close(Reply),
+             get_dict(beliefs, Dict, AtomList),
+             maplist(term_to_atom_safe, Beliefs, AtomList)),
+            _Error,
+            Beliefs = []
+        )
+    ;
+        findall(B, agent_belief_rt(Name, B), Beliefs)
+    ).
+
+term_to_atom_safe(Term, Atom) :-
+    catch(term_to_atom(Term, Atom), _, Term = Atom).
 
 %% ============================================================
 %% AGENT LOOP
@@ -1048,6 +1181,25 @@ execute_body(_, plus(A, B, C)) :- !, plus(A, B, C).
 execute_body(_, between(A, B, C)) :- !, between(A, B, C).
 execute_body(_, sleep(T)) :- !, sleep(T).
 execute_body(_, get_time(T)) :- !, get_time(T).
+
+% --- DALI-style body predicates (runtime support) ---
+% These handle DALI syntax that may appear in dynamically evaluated bodies.
+% Most DALI syntax is transformed at load time by transform_body/2 in the loader,
+% but these clauses provide runtime fallback support.
+
+% messageA(Dest, send_message(Content, _Me)) → send(Dest, Content)
+execute_body(Name, messageA(Dest, send_message(Content, _Me))) :- !,
+    execute_body(Name, send(Dest, Content)).
+execute_body(Name, messageA(Dest, send_message(Content))) :- !,
+    execute_body(Name, send(Dest, Content)).
+
+% evp(Event) → has_past(Event)
+execute_body(Name, evp(Event)) :- !,
+    execute_body(Name, has_past(Event)).
+
+% tenta_residuo(Goal) → achieve(Goal)
+execute_body(Name, tenta_residuo(Goal)) :- !,
+    execute_body(Name, achieve(Goal)).
 
 % Catch-all: try calling as a Prolog goal
 execute_body(Name, Goal) :-

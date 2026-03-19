@@ -2,13 +2,16 @@
 
 This guide explains all included examples, how to run them, and the commands to test each feature.
 
+DALI2 now supports **DALI-compatible syntax** — the same operators (`:>`, `:<`, `~/`, `</`, `?/`) and suffixes (`E`, `I`, `A`, `N`, `P`) as the original DALI framework. Each agent runs as a **separate OS process**.
+
 ## Table of Contents
 
 - [Running Examples](#running-examples)
 - [1. Smart Agriculture (`agriculture.pl`)](#1-smart-agriculture)
 - [2. Emergency Response (`emergency.pl`)](#2-emergency-response)
-- [3. Feature Showcase (`showcase.pl`)](#3-feature-showcase)
-- [4. Distributed Emergency (`emergency_sensors.pl` + `emergency_responders.pl`)](#4-distributed-emergency)
+- [3. Feature Showcase — DALI2 syntax (`showcase.pl`)](#3-feature-showcase)
+- [4. Feature Showcase — DALI syntax (`showcase_dali.pl`)](#4-feature-showcase--dali-syntax)
+- [5. Distributed Emergency (`emergency_sensors.pl` + `emergency_responders.pl`)](#5-distributed-emergency)
 - [API Quick Reference](#api-quick-reference)
 
 ---
@@ -420,7 +423,36 @@ curl http://localhost:8080/api/blackboard
 
 ---
 
-## 4. Distributed Emergency
+## 4. Feature Showcase — DALI Syntax
+
+**File:** `examples/showcase_dali.pl`
+
+The same feature showcase as `showcase.pl`, but written entirely in **DALI original syntax** — using `:>`, `:<`, `~/`, `</`, `?/`, `:~` operators and `E`/`I`/`A`/`N`/`P` suffixes. This demonstrates that DALI2 accepts the same syntax as the original DALI framework.
+
+### Key Syntax Differences from `showcase.pl`
+
+| Feature | `showcase.pl` (DALI2 syntax) | `showcase_dali.pl` (DALI syntax) |
+|---------|------------------------------|----------------------------------|
+| External events | `agent:on(event) :- body.` | `agent:eventE :> body.` |
+| Internal events | `agent:internal(ev, [opts]) :- body.` | `agent:evI :> body.` + `agent:internal_event/5` |
+| Actions | `agent:do(action) :- body.` | `agent:actionA :- body.` |
+| Condition-action | `agent:on_change(cond) :- body.` | `agent:cond :< body.` |
+| Constraints | `agent:constraint(cond) :- handler.` | `agent :~ cond :- handler.` |
+| Export past | `agent:on_past([events]) :- body.` | `agent:body ~/ event1, event2.` |
+| Goals | `agent:goal(achieve, goal) :- plan.` | `agent:obt_goal(goal) :- plan.` |
+| Past lifetime | `agent:past_lifetime(ev, 60).` | `agent:past_event(ev, 60).` |
+
+### Running
+
+```bash
+swipl -l src/server.pl -g main -- 8080 examples/showcase_dali.pl
+```
+
+The test commands are the same as for `showcase.pl` (see section 3 above).
+
+---
+
+## 5. Distributed Emergency
 
 **Files:** `examples/emergency_sensors.pl` + `examples/emergency_responders.pl`
 
