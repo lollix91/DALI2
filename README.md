@@ -347,7 +347,9 @@ The API key is **optional** — if not set, `ai_available` fails and `ask_ai` re
 ### Usage in agents
 
 ```prolog
-my_agent:analyzeE(Data) :>
+:- agent(my_agent, [cycle(2)]).
+
+analyzeE(Data) :>
     ( ai_available ->
         ask_ai(analyze_situation(Data), Advice),
         log("AI says: ~w", [Advice]),
@@ -410,37 +412,37 @@ The web interface at `http://localhost:8080` provides:
 |--------|----------------|---------------------|
 | Source files | ~20 | 8 |
 | Agent definition | Multiple files (instances + type files) | Single `.pl` file (multi-agent) |
-| Process model | Separate process per agent + Linda server | **Separate OS process per agent** + HTTP IPC |
-| Communication | TCP sockets (Linda) | HTTP-based IPC + federation |
+| Process model | Separate process per agent + Linda server | **Separate OS process per agent** + Redis pub/sub |
+| Communication | TCP sockets (Linda) | Redis star topology + HTTP federation |
 | Tokenizer | Complex (tokefun + togli_var + metti_var) | None (direct parsing with DALI operators) |
 | UI | Separate Python project (dalia) | Integrated web UI |
 | AI integration | External Python TCP service | Built-in (direct OpenAI API calls) **[NEW]** |
 | Docker setup | Complex (SICStus install) | Simple (swipl base image) |
-| Event syntax | `eventE(X) :> body.` | `agent:eventE(X) :> body.` (same syntax!) |
-| Message sending | `messageA(dest, send_message(ev(X), Me))` | `messageA(dest, send_message(ev(X), Me))` or `send(dest, ev(X))` |
-| Internal events | `internal_event/5` | `agent:eventI :> body.` + `agent:internal_event/5` (same!) |
-| Tell/told | `told(_,inform(_),70)` | `agent:told(inform(_), 70).` |
+| Event syntax | `eventE(X) :> body.` | `eventE(X) :> body.` (identical!) |
+| Message sending | `messageA(dest, send_message(ev(X), Me))` | Same, or `send(dest, ev(X))` |
+| Internal events | `eventI :> body.` + `internal_event/5` | `eventI :> body.` + `internal_event/5` (identical!) |
+| Tell/told | `told(_, pattern, pri) :- true.` | `told(_, pattern, pri) :- true.` (identical!) |
 | FIPA messages | `confirm`/`disconfirm`/`propose`/`query_ref` | `send(to, confirm(fact))` — full FIPA-ACL |
-| Action definition | `actionA(X) :- body.` | `agent:actionA(X) :- body.` (same syntax!) |
-| Action proposal | `propose(A,C,Ag)` + `call_propose` | `agent:on_proposal(action) :- body.` **[NEW]** |
-| Past lifetime | `past_event(ev, 60)` | `agent:past_event(ev, 60).` (same syntax!) |
-| Remember | `remember_event_mod(ev, number(5), last)` | `agent:remember_event_mod(ev, number(5), last).` (same!) |
-| Export past (~/) | `head ~/ body` | `agent:head ~/ body` (same operator!) |
-| Export past (</) | `head </ body` | `agent:head </ body` (same operator!) |
-| Export past (?/) | `head ?/ body` | `agent:head ?/ body` (same operator!) |
+| Action definition | `actionA(X) :- body.` | `actionA(X) :- body.` (identical!) |
+| Action proposal | `propose(A,C,Ag)` + `call_propose` | `on_proposal(action) :- body.` **[NEW]** |
+| Past lifetime | `past_event(ev, 60).` | `past_event(ev, 60).` (identical!) |
+| Remember | `remember_event_mod(ev, number(5), last).` | `remember_event_mod(ev, number(5), last).` (identical!) |
+| Export past (~/) | `head ~/ past1, past2.` | `head ~/ past1, past2.` (identical!) |
+| Export past (</) | `head </ past1, past2.` | `head </ past1, past2.` (identical!) |
+| Export past (?/) | `head ?/ past1, past2.` | `head ?/ past1, past2.` (identical!) |
 | Residue goals | `tenta_residuo(goal)` | `tenta_residuo(goal)` or `achieve(goal)` |
-| Condition-action | `cond :< action.` | `agent:cond :< action.` (same operator!) |
-| Present events | `en(X)` with suffix N | `agent:condN :- body.` (same suffix!) |
-| Multi-events | conjunction with E-suffix | `agent:ev1E, ev2E :> body.` (same!) |
-| Constraints | `:~ constraint.` | `agent :~ constraint.` (same operator!) |
-| Ontologies | `meta/3` + OWL files | `agent:ontology(same_as(a,b)).` + `ontology_file` |
-| Learning | `learning.pl` + constraints | `agent:learn_from(event, outcome) :- body.` **[NEW]** |
-| Goals | `obt_goal`/`test_goal` | `agent:obt_goal(goal) :- plan.` / `test_goal` (same!) |
-| Periodic tasks | — | `agent:every(seconds, goal).` **[NEW]** |
-| Condition monitors | — | `agent:when(condition) :- body.` **[NEW]** |
-| Helpers | — | `agent:helper(head) :- body.` **[NEW]** |
+| Condition-action | `cond :< action.` | `cond :< action.` (identical!) |
+| Present events | `condN :- body.` | `condN :- body.` (identical!) |
+| Multi-events | `ev1E, ev2E :> body.` | `ev1E, ev2E :> body.` (identical!) |
+| Constraints | `:~ constraint.` | `:~ constraint.` (identical!) |
+| Ontologies | `meta/3` + OWL files | `ontology(same_as(a,b)).` + `ontology_file` |
+| Learning | `learning.pl` + constraints | `learn_from(event, outcome) :- body.` **[NEW]** |
+| Goals | `obt_goal(goal) :- plan.` | `obt_goal(goal) :- plan.` (identical!) |
+| Periodic tasks | — | `every(seconds, goal).` **[NEW]** |
+| Condition monitors | — | `when(condition) :- body.` **[NEW]** |
+| Helpers | — | `helper(head) :- body.` **[NEW]** |
 | AI Oracle | — | `ask_ai(context, result)` **[NEW]** |
-| Blackboard | Linda (TCP) | `bb_read`/`bb_write`/`bb_remove` (HTTP) **[NEW]** |
+| Blackboard | Linda (TCP) | `bb_read`/`bb_write`/`bb_remove` (Redis) **[NEW]** |
 
 ## License
 

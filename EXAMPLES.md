@@ -9,8 +9,8 @@ DALI2 now supports **DALI-compatible syntax** — the same operators (`:>`, `:<`
 - [Running Examples](#running-examples)
 - [1. Smart Agriculture (`agriculture.pl`)](#1-smart-agriculture)
 - [2. Emergency Response (`emergency.pl`)](#2-emergency-response)
-- [3. Feature Showcase — DALI2 syntax (`showcase.pl`)](#3-feature-showcase)
-- [4. Feature Showcase — DALI syntax (`showcase_dali.pl`)](#4-feature-showcase--dali-syntax)
+- [3. Feature Showcase (`showcase.pl`)](#3-feature-showcase)
+- [4. Feature Showcase — DALI syntax reference (`showcase_dali.pl`)](#4-feature-showcase--dali-syntax-reference)
 - [5. Distributed Emergency (`emergency_sensors.pl` + `emergency_responders.pl`)](#5-distributed-emergency)
 - [API Quick Reference](#api-quick-reference)
 
@@ -80,7 +80,7 @@ A precision agriculture system with 6 agents. Sensors validate readings via **in
 ### Features Demonstrated
 
 - **Internal events** — sensors validate readings (soil_alert_check, soil_normal_check, weather_risk_check, weather_normal_check)
-- **Reactive rules** (`on`) — all agents react to incoming events
+- **Reactive rules** (`E` suffix + `:>`) — all agents react to incoming events
 - **Belief management** — irrigation controller tracks active/reduced state per field
 - **Multi-agent communication** — message chains across 4+ agents
 - **AI Oracle** — crop_advisor uses AI for soil/weather analysis (if API key configured)
@@ -176,7 +176,7 @@ A 9-agent emergency response system. The sensor validates alarms via **internal 
 ### Features Demonstrated
 
 - **Internal events** — sensor: alarm validation (check_alarm, check_false_alarm); coordinator: dispatch_response (waits for equipment + location), check_done (waits for evacuated + responded)
-- **Reactive rules** — full chain from detection to resolution
+- **Reactive rules** (`E` suffix + `:>`) — full chain from detection to resolution
 - **Belief management** — coordinator tracks pending_location, equipment_ready, evacuated, responded
 - **Multi-step coordination** — responder is only dispatched after manager provides equipment
 - **AI Oracle** — coordinator analyzes emergency (if API key configured)
@@ -238,7 +238,7 @@ curl http://localhost:8080/api/past?agent=coordinator
 
 **File:** `examples/showcase.pl`
 
-Demonstrates **all 32 DALI2 features** in a single file. This is the comprehensive reference example that covers every rule type, DSL predicate, and advanced feature ported from DALI.
+Demonstrates **all 32 DALI2 features** in a single file using **DALI syntax** (`:>`, `:<`, `~/`, `</`, `?/`, `:~` operators and `E`/`I`/`A` suffixes). This is the comprehensive reference example that covers every rule type, DSL predicate, and advanced feature.
 
 ### Agents
 
@@ -254,16 +254,16 @@ Demonstrates **all 32 DALI2 features** in a single file. This is the comprehensi
 
 | # | Feature | Agent | How to Trigger |
 |---|---------|-------|----------------|
-| 1 | **Reactive rules** (`on`) | all | Send events to agents |
+| 1 | **Reactive rules** (`E` + `:>`) | all | Send events to agents |
 | 2 | **Internal event interval** | thermostat | Automatic — `temp_check` fires every 5s (not every cycle) |
 | 3 | **Internal event change** | thermostat | Send `update_temp` — `startup_diagnostic` counter resets |
 | 4 | **Internal event trigger** | thermostat | `cooling_monitor` fires only when `mode(cooling)` |
 | 5 | **Internal event between** | thermostat | `work_hours_check` fires in time window |
 | 6 | **Periodic tasks** | sensor | Automatic — heartbeat every 15 seconds |
 | 7 | **Condition monitors** (`when`) | logger | Warns when log volume > 10 |
-| 8 | **Condition-action** (`on_change`) | thermostat | Edge-triggered when cooling mode activates |
+| 8 | **Condition-action** (`:<`) | thermostat | Edge-triggered when cooling mode activates |
 | 9 | **Present events** | sensor | Blackboard data triggers environment observation |
-| 10 | **Multi-events** (`on_all`) | coordinator | Both `sensor_data` + `alert` → fires |
+| 10 | **Multi-events** (`,` + `:>`) | coordinator | Both `sensor_data` + `alert` → fires |
 | 11 | **Constraints** | thermostat | Temperature > 50 triggers violation |
 | 12 | **Goals (achieve)** | sensor | Calibration goal keeps trying until achieved |
 | 13 | **Goals (test)** | coordinator | Tests if alerts received |
@@ -276,13 +276,13 @@ Demonstrates **all 32 DALI2 features** in a single file. This is the comprehensi
 | 20 | **FIPA inform** | worker→coordinator | Worker sends analysis results |
 | 21 | **Action proposals** (`on_proposal`) | worker | Accepts/rejects proposals from coordinator |
 | 22 | **Past lifetime + remember** | sensor | `sensor_data` expires after 30s, remembered 5min |
-| 23 | **Export past** (`on_past`) | coordinator | Alert + sensor_data consumed together |
-| 24 | **Export past** (`on_past_not_done`) | coordinator | Fires if backup NOT done |
+| 23 | **Export past** (`~/`) | coordinator | Alert + sensor_data consumed together |
+| 24 | **Export past NOT done** (`</`) | coordinator | Fires if backup NOT done |
 | 25 | **Residue goals** | coordinator | Inject `start_residue_test` then `residue_resolved` |
 | 26 | **External ontology file** | logger | Loads `test_ontology.pl` on startup |
 | 27 | **Inline ontology** | logger | `log_event` matches `log_entry` via `same_as` |
 | 28 | **Learning** | sensor | `read_temp(85)` → learns overheating pattern |
-| 29 | **Actions** (`do`) | worker | `analyze(Data)` action definition |
+| 29 | **Actions** (`A` suffix) | worker | `analyze(Data)` action definition |
 | 30 | **Helpers** | logger | `count_logs` helper |
 | 31 | **Blackboard** | sensor | Writes environment data |
 | 32 | **AI Oracle** | coordinator | Emergency analysis (if API key configured) |
@@ -423,24 +423,25 @@ curl http://localhost:8080/api/blackboard
 
 ---
 
-## 4. Feature Showcase — DALI Syntax
+## 4. Feature Showcase — DALI Syntax Reference
 
 **File:** `examples/showcase_dali.pl`
 
-The same feature showcase as `showcase.pl`, but written entirely in **DALI original syntax** — using `:>`, `:<`, `~/`, `</`, `?/`, `:~` operators and `E`/`I`/`A`/`N`/`P` suffixes. This demonstrates that DALI2 accepts the same syntax as the original DALI framework.
+A lighter version of the feature showcase, also written in **DALI syntax** (same as `showcase.pl`). Both files use the same DALI operators and suffixes — no agent prefix needed, just `:- agent(name).` context declarations.
 
-### Key Syntax Differences from `showcase.pl`
+Both files demonstrate DALI syntax:
+- `E` suffix + `:>` for external events
+- `I` suffix + `:>` + `internal_event/5` for internal events
+- `A` suffix for actions
+- `:<` for condition-action rules
+- `:~` for constraints
+- `~/` / `</` for export past rules
+- `obt_goal` / `test_goal` for goals
+- `past_event/2`, `remember_event/2`, `remember_event_mod/3` for past lifetime
+- `told/3`, `tell/3` for communication filtering (DALI `communication.con` style)
 
-| Feature | `showcase.pl` (DALI2 syntax) | `showcase_dali.pl` (DALI syntax) |
-|---------|------------------------------|----------------------------------|
-| External events | `agent:on(event) :- body.` | `agent:eventE :> body.` |
-| Internal events | `agent:internal(ev, [opts]) :- body.` | `agent:evI :> body.` + `agent:internal_event/5` |
-| Actions | `agent:do(action) :- body.` | `agent:actionA :- body.` |
-| Condition-action | `agent:on_change(cond) :- body.` | `agent:cond :< body.` |
-| Constraints | `agent:constraint(cond) :- handler.` | `agent :~ cond :- handler.` |
-| Export past | `agent:on_past([events]) :- body.` | `agent:body ~/ event1, event2.` |
-| Goals | `agent:goal(achieve, goal) :- plan.` | `agent:obt_goal(goal) :- plan.` |
-| Past lifetime | `agent:past_lifetime(ev, 60).` | `agent:past_event(ev, 60).` |
+New DALI2-only features (marked `[NEW]` in the file) are integrated without prefix:
+- `every`, `when`, `helper`, `on_proposal`, `learn_from`, `ontology`, `ontology_file`, `bb_read`/`bb_write`/`bb_remove`
 
 ### Running
 

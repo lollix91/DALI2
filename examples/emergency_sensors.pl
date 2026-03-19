@@ -6,15 +6,16 @@
 %%   or just run all agents defined here on this node.
 
 :- agent(sensor, [cycle(1)]).
-:- agent(logger, [cycle(1)]).
 
 %% SENSOR - Detects emergencies, sends to coordinator (remote on node2)
-sensor:on(detect(Type, Location)) :-
+detectE(Type, Location) :>
     log("Emergency detected: ~w at ~w", [Type, Location]),
     assert_belief(detected(Type, Location)),
     send(coordinator, alarm(Type, Location)),
     send(logger, log_event(detection, sensor, [Type, Location])).
 
+:- agent(logger, [cycle(1)]).
+
 %% LOGGER - Logs all events
-logger:on(log_event(Type, Source, Data)) :-
+log_eventE(Type, Source, Data) :>
     log("LOG [~w] from ~w: ~w", [Type, Source, Data]).

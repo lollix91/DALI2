@@ -29,27 +29,29 @@
 :- agent(sensor, [cycle(1)]).
 
 %% Receive a detection event, store state for internal event validation
-sensor:on(sense(Type, Location)) :-
+senseE(Type, Location) :>
     log("Detected: ~w at ~w", [Type, Location]),
     assert_belief(detected(Type, Location)),
     send(logger, log_event(detection, sensor, [Type, Location])).
 
 %% Internal event: real alarm — type is smoke, fire, or earthquake
-sensor:internal(check_alarm, [forever]) :-
+check_alarmI :>
     believes(detected(Type, Location)),
     member(Type, [smoke, fire, earthquake]),
     log("ALARM CONFIRMED: ~w at ~w", [Type, Location]),
     retract_belief(detected(Type, Location)),
     send(coordinator, alarm(Type, Location)),
     send(logger, log_event(alarm, sensor, [Type, Location])).
+internal_event(check_alarm, 0, forever, true, forever).
 
 %% Internal event: false alarm — type is not in alarm list
-sensor:internal(check_false_alarm, [forever]) :-
+check_false_alarmI :>
     believes(detected(Type, Location)),
     \+ member(Type, [smoke, fire, earthquake]),
     log("FALSE ALARM: ~w at ~w", [Type, Location]),
     retract_belief(detected(Type, Location)),
     send(logger, log_event(false_alarm, sensor, [Type, Location])).
+internal_event(check_false_alarm, 0, forever, true, forever).
 
 %% ============================================================
 %% COORDINATOR — multi-step dispatch with AI and internal events
@@ -64,7 +66,7 @@ sensor:internal(check_false_alarm, [forever]) :-
 
 :- agent(coordinator, [cycle(1)]).
 
-coordinator:on(alarm(Type, Location)) :-
+alarmE(Type, Location) :>
     log("ALARM: ~w at ~w", [Type, Location]),
     assert_belief(active_emergency(Type, Location)),
     assert_belief(pending_location(Location)),
@@ -80,22 +82,22 @@ coordinator:on(alarm(Type, Location)) :-
     send(manager, emergency(Type)),
     send(logger, log_event(dispatch, coordinator, [Type, Location])).
 
-coordinator:on(equipped(Equipment)) :-
+equippedE(Equipment) :>
     log("Equipment received: ~w", [Equipment]),
     assert_belief(equipment_ready(Equipment)).
 
-coordinator:on(evacuated(Location)) :-
+evacuatedE(Location) :>
     log("Evacuation complete: ~w", [Location]),
     assert_belief(evacuated(Location)),
     send(logger, log_event(report, evacuator, [evacuation_complete, Location])).
 
-coordinator:on(responded(Location)) :-
+respondedE(Location) :>
     log("Response complete: ~w", [Location]),
     assert_belief(responded(Location)),
     send(logger, log_event(report, responder, [response_complete, Location])).
 
 %% Internal event: when location + equipment ready → dispatch responder
-coordinator:internal(dispatch_response, [forever]) :-
+dispatch_responseI :>
     believes(pending_location(Location)),
     believes(equipment_ready(Equipment)),
     log("Dispatching responder with ~w to ~w", [Equipment, Location]),
@@ -103,9 +105,10 @@ coordinator:internal(dispatch_response, [forever]) :-
     retract_belief(equipment_ready(Equipment)),
     send(responder, respond(Equipment, Location)),
     send(logger, log_event(response_dispatched, coordinator, [Equipment, Location])).
+internal_event(dispatch_response, 0, forever, true, forever).
 
 %% Internal event: when evacuated + responded → emergency resolved
-coordinator:internal(check_done, [forever]) :-
+check_doneI :>
     believes(evacuated(Location)),
     believes(responded(Location)),
     log("EMERGENCY RESOLVED at ~w", [Location]),
@@ -113,6 +116,7 @@ coordinator:internal(check_done, [forever]) :-
     retract_belief(responded(Location)),
     retract_belief(active_emergency(_, Location)),
     send(logger, log_event(done, coordinator, [resolved, Location])).
+internal_event(check_done, 0, forever, true, forever).
 
 %% ============================================================
 %% MANAGER — determines equipment based on emergency type
@@ -123,7 +127,7 @@ coordinator:internal(check_done, [forever]) :-
 
 :- agent(manager, [cycle(1)]).
 
-manager:on(emergency(Type)) :-
+emergencyE(Type) :>
     log("Emergency type: ~w — determining equipment", [Type]),
     ( Type == fire -> Equipment = firetruck
     ; Type == earthquake -> Equipment = bulldozer
@@ -140,7 +144,7 @@ manager:on(emergency(Type)) :-
 
 :- agent(evacuator, [cycle(1)]).
 
-evacuator:on(evacuate(Location, Type)) :-
+evacuateE(Location, Type) :>
     log("Evacuating ~w due to ~w", [Location, Type]),
     send(coordinator, evacuated(Location)),
     send(logger, log_event(evacuation, evacuator, [Location, Type])).
@@ -151,7 +155,7 @@ evacuator:on(evacuate(Location, Type)) :-
 
 :- agent(responder, [cycle(1)]).
 
-responder:on(respond(Equipment, Location)) :-
+respondE(Equipment, Location) :>
     log("Using ~w at ~w", [Equipment, Location]),
     send(coordinator, responded(Location)),
     send(logger, log_event(response, responder, [Equipment, Location])).
@@ -162,7 +166,7 @@ responder:on(respond(Equipment, Location)) :-
 
 :- agent(communicator, [cycle(1)]).
 
-communicator:on(notify_civilians(Type, Location)) :-
+notify_civiliansE(Type, Location) :>
     log("Notifying civilians about ~w at ~w", [Type, Location]),
     send(mary, message(Type, Location)),
     send(john, message(Type, Location)),
@@ -174,12 +178,12 @@ communicator:on(notify_civilians(Type, Location)) :-
 
 :- agent(mary, [cycle(1)]).
 
-mary:on(message(Type, Location)) :-
+messageE(Type, Location) :>
     log("Received alarm about ~w at ~w, preparing for evacuation", [Type, Location]).
 
 :- agent(john, [cycle(1)]).
 
-john:on(message(Type, Location)) :-
+messageE(Type, Location) :>
     log("Received alarm about ~w at ~w, preparing for evacuation", [Type, Location]).
 
 %% ============================================================
@@ -188,5 +192,5 @@ john:on(message(Type, Location)) :-
 
 :- agent(logger, [cycle(1)]).
 
-logger:on(log_event(Type, Source, Data)) :-
+log_eventE(Type, Source, Data) :>
     log("LOG [~w] from ~w: ~w", [Type, Source, Data]).

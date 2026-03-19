@@ -99,15 +99,15 @@ All agents in a single `.pl` file share the same file. Each rule is prefixed wit
 
 React to external events (messages from other agents or injected events).
 
-**DALI Syntax (primary):**
+**Syntax (DALI — primary):**
 
 ```prolog
-agent:eventE(Args) :> Body.
+eventE(Args) :> Body.
 ```
 
 The `E` suffix marks external events. The `:>` operator separates the head from the body. The suffix is stripped when matching incoming events (e.g., `readingE(V)` matches incoming event `reading(V)`).
 
-**DALI2 Syntax (also supported):**
+**Alternative syntax (also supported):**
 
 ```prolog
 agent:on(EventPattern) :- Body.
@@ -116,19 +116,20 @@ agent:on(EventPattern) :- Body.
 **Examples:**
 
 ```prolog
-%% DALI syntax — react to a simple event
-sensor:readingE(Value) :>
+:- agent(sensor, [cycle(1)]).
+
+%% React to a simple event
+readingE(Value) :>
     log("Sensor reading: ~w", [Value]),
     send(analyzer, data(Value)).
 
-%% DALI syntax — react with pattern matching
-coordinator:alarmE(Type, Location) :>
+:- agent(coordinator, [cycle(1)]).
+
+%% React with pattern matching
+alarmE(Type, Location) :>
     log("Alarm: ~w at ~w", [Type, Location]),
     assert_belief(active_alarm(Type, Location)),
-    messageA(responder, send_message(respond(Location, Type), coordinator)).
-
-%% DALI2 syntax — also works
-logger:on(ping) :- log("Ping received").
+    send(responder, respond(Location, Type)).
 ```
 
 When a message arrives, the engine matches it against all handlers for the receiving agent. If the agent has ontology declarations, matching is ontology-aware (e.g., `alarmE(hot(X))` will also match `alarm(warm(X))` if `same_as(hot, warm)` is declared).
@@ -141,16 +142,16 @@ When a message arrives, the engine matches it against all handlers for the recei
 
 Proactive events that fire automatically based on conditions.
 
-**DALI Syntax (primary):**
+**Syntax (DALI — primary):**
 
 ```prolog
-agent:eventI(Args) :> Body.                                          %% handler
-agent:internal_event(Event, Period, Repetition, StartCond, StopCond). %% configuration
+eventI(Args) :> Body.                                          %% handler
+internal_event(Event, Period, Repetition, StartCond, StopCond). %% configuration
 ```
 
 The `I` suffix marks internal events. The handler (`:>`) defines what to execute, and `internal_event/5` configures timing and conditions.
 
-**DALI2 Syntax (also supported):**
+**Alternative syntax (also supported):**
 
 ```prolog
 agent:internal(Event) :- Body.                     %% forever (default)
@@ -175,7 +176,36 @@ Options can be combined in a list: `[times(10), between(time(9,0), time(17,0))]`
 
 The `trigger(Condition)` option is particularly important: it acts as a **start condition** (or guard) that must be satisfied before the internal event fires. The condition is evaluated each cycle using the same condition evaluation as `when` rules (supports `believes(...)`, `has_past(...)`, `learned(...)`, `bb_read(...)`, arithmetic comparisons, etc.). This mirrors DALI's internal events which also had start conditions.
 
-**Examples:**
+**Examples (DALI syntax):**
+
+```prolog
+:- agent(thermostat, [cycle(2)]).
+
+%% Fire every 5 seconds (interval)
+temp_checkI :>
+    believes(current_temp(T)),
+    log("Temperature check, current=~w", [T]).
+internal_event(temp_check, 5, forever, true, forever).
+
+%% Fire with change condition — resets when current_temp changes
+startup_diagnosticI :>
+    log("Startup diagnostic"),
+    assert_belief(diagnostic_done).
+internal_event(startup_diagnostic, 0, change([current_temp(_)]), true, forever).
+
+%% Fire only when mode is cooling (trigger/start condition)
+cooling_monitorI :>
+    believes(current_temp(T)),
+    log("Monitoring cooling, temp: ~w", [T]).
+internal_event(cooling_monitor, 0, forever, believes(mode(cooling)), forever).
+
+%% Fire only during work hours (between time window)
+work_hours_checkI :>
+    log("Work hours system check").
+internal_event(work_hours_check, 10, forever, true, in_date(time(9,0), time(17,0))).
+```
+
+**Examples (alternative syntax):**
 
 ```prolog
 %% Fire forever (every cycle)
@@ -186,39 +216,16 @@ monitor:internal(heartbeat) :-
 greeter:internal(say_hello, times(3)) :-
     log("Hello!").
 
-%% Fire until a condition is met
-searcher:internal(search_step, until(believes(found(target)))) :-
-    log("Still searching..."),
-    do(search_next).
-
-%% Fire only between 14:00 and 17:00
-worker:internal(afternoon_check, between(time(14,0), time(17,0))) :-
-    log("Afternoon check"),
-    send(supervisor, status_report).
-
-%% Combined: at most 5 times, only during work hours
-reporter:internal(report, [times(5), between(time(9,0), time(18,0))]) :-
-    send(manager, daily_report).
-
-%% Fire only during a specific date range
-event_agent:internal(countdown, between(date(2026,3,1), date(2026,3,15))) :-
-    log("Event period active!").
-
-%% Fire only when a condition holds (trigger/start condition)
+%% Fire only when a condition holds
 thermostat:internal(cooling_monitor, [forever, trigger(believes(mode(cooling)))]) :-
     believes(current_temp(T)),
     log("Monitoring cooling, temp: ~w", [T]).
-
-%% Combined: triggered + limited repetitions
-robot:internal(charge_check, [times(10), trigger(believes(battery_low))]) :-
-    log("Battery low! Checking charge level..."),
-    do(check_battery).
 
 %% Fire every 5 seconds (not every cycle)
 monitor:internal(slow_check, [forever, interval(5)]) :-
     log("Slow check (every 5 seconds)").
 
-%% Fire 3 times, but reset counter when temperature belief changes
+%% Fire 3 times, reset counter when temperature changes
 sensor:internal(temp_report, [times(3), change([temperature(_)])]) :-
     believes(temperature(T)),
     log("Temperature report: ~w", [T]).
@@ -234,23 +241,25 @@ Each internal event is tracked: the engine counts how many times it has fired an
 
 ## Periodic Tasks
 
-Run a task at fixed time intervals.
+Run a task at fixed time intervals. **[NEW in DALI2]**
 
 **Syntax:**
 
 ```prolog
-agent:every(Seconds, Goal).
-agent:every(Seconds) :- Body.
+every(Seconds, Goal).
+every(Seconds) :- Body.
 ```
 
 **Examples:**
 
 ```prolog
+:- agent(sensor, [cycle(1)]).
+
 %% Simple periodic log
-sensor:every(10, log("Heartbeat")).
+every(10, log("Heartbeat")).
 
 %% Periodic with body
-monitor:every(30) :-
+every(30) :-
     log("Checking system health"),
     send(dashboard, health_check).
 ```
@@ -261,24 +270,28 @@ Unlike internal events, periodic tasks don't have conditional options — they s
 
 ## Condition Monitors
 
-Check a condition every cycle. If true, execute the body. **Level-triggered**: fires every cycle while the condition holds.
+Check a condition every cycle. If true, execute the body. **Level-triggered**: fires every cycle while the condition holds. **[NEW in DALI2]**
 
 **Syntax:**
 
 ```prolog
-agent:when(Condition) :- Body.
-agent:when(Condition1, Condition2) :- Body.     %% both must hold
+when(Condition) :- Body.
+when(Condition1, Condition2) :- Body.     %% both must hold
 ```
 
 **Examples:**
 
 ```prolog
+:- agent(thermostat, [cycle(2)]).
+
 %% Fire every cycle while temperature is high
-thermostat:when(believes(temperature(T)), T > 30) :-
+when(believes(temperature(T)), T > 30) :-
     send(ac_controller, cool_down).
 
+:- agent(alarm, [cycle(1)]).
+
 %% Check a past event condition
-alarm:when(has_past(intrusion_detected)) :-
+when(has_past(intrusion_detected)) :-
     send(security, alert).
 ```
 
@@ -288,7 +301,13 @@ alarm:when(has_past(intrusion_detected)) :-
 
 **Edge-triggered**: fires exactly once when a condition transitions from false to true. Does not fire again until the condition becomes false and then true again.
 
-**Syntax:**
+**Syntax (DALI — primary):**
+
+```prolog
+Condition :< Action.
+```
+
+**Alternative syntax (also supported):**
 
 ```prolog
 agent:on_change(Condition) :- Body.
@@ -297,19 +316,26 @@ agent:on_change(Condition) :- Body.
 **Examples:**
 
 ```prolog
-%% Fire once when battery becomes low
-robot:on_change(believes(battery_level(L)), L < 20) :-
-    log("Battery low! Requesting charge."),
-    send(charger, request_charge).
+:- agent(thermostat, [cycle(2)]).
 
-%% Fire once when an event occurs for the first time
-monitor:on_change(has_past(system_error)) :-
-    send(admin, notify(first_error_detected)).
+%% Fire once when cooling mode activates (DALI :< syntax)
+believes(mode(cooling)) :< (
+    log("Cooling mode just activated"),
+    send(logger, log_event(mode_change, thermostat, cooling))
+).
+
+:- agent(robot, [cycle(1)]).
+
+%% Fire once when battery becomes low
+believes(battery_level(L)), L < 20 :< (
+    log("Battery low! Requesting charge."),
+    send(charger, request_charge)
+).
 ```
 
 **Difference from `when`:**
 - `when` fires **every cycle** while the condition is true (level-triggered)
-- `on_change` fires **once** when the condition becomes true (edge-triggered), then waits for it to become false before it can fire again
+- `:<` / `on_change` fires **once** when the condition becomes true (edge-triggered), then waits for it to become false before it can fire again
 
 ---
 
@@ -317,23 +343,36 @@ monitor:on_change(has_past(system_error)) :-
 
 Monitor the environment (blackboard, external state) every cycle. Similar to `when` but semantically represents observations from the agent's environment rather than internal reasoning.
 
-**Syntax:**
+**Syntax (DALI — primary, for belief conditions):**
+
+```prolog
+conditionN(Args) :- Body.
+```
+
+The `N` suffix marks present events. The condition is evaluated each cycle; if true, the body fires.
+
+**Syntax (for blackboard/complex conditions):**
 
 ```prolog
 agent:on_present(Condition) :- Body.
 ```
 
+> **Note:** The `N` suffix works for belief-based conditions. For blackboard monitoring (`bb_read`), use the `on_present` form with agent prefix.
+
 **Examples:**
 
 ```prolog
-%% React to blackboard data (e.g., sensor publishes to blackboard)
-analyzer:on_present(bb_read(sensor_data(temp, T))) :-
-    log("Environment temperature: ~w", [T]),
-    ( T > 50 -> send(alarm, overheat(T)) ; true ).
+:- agent(sensor, [cycle(2)]).
 
-%% React to a belief representing an observable state
-robot:on_present(believes(obstacle_ahead)) :-
-    do(turn_around).
+%% Monitor blackboard for external data (on_present form needed for bb_read)
+sensor:on_present(bb_read(environment(temp, T))) :-
+    log("Environment temperature: ~w", [T]),
+    send(thermostat, update_temp(T)).
+
+:- agent(robot, [cycle(1)]).
+
+%% React to a belief representing an observable state (N suffix)
+obstacle_aheadN :- do(turn_around).
 ```
 
 ---
@@ -342,7 +381,13 @@ robot:on_present(believes(obstacle_ahead)) :-
 
 Fire when **all** listed events have occurred in the agent's past memory. The body fires once when all events are present; it resets if any event is removed from the past.
 
-**Syntax:**
+**Syntax (DALI — primary):**
+
+```prolog
+event1E(Args), event2E(Args) :> Body.
+```
+
+**Alternative syntax (also supported):**
 
 ```prolog
 agent:on_all([Event1, Event2, ...]) :- Body.
@@ -351,15 +396,12 @@ agent:on_all([Event1, Event2, ...]) :- Body.
 **Examples:**
 
 ```prolog
-%% Fire when both initialization steps complete
-system:on_all([config_loaded, db_connected]) :-
-    log("System fully initialized"),
-    send(coordinator, system_ready).
+:- agent(coordinator, [cycle(2)]).
 
-%% Fire when all sensor readings received
-analyzer:on_all([soil_data(_, _, _), weather_data(_, _, _)]) :-
-    log("All data received, starting analysis"),
-    do(full_analysis).
+%% Fire when both sensor data AND alert received (DALI multi-event)
+sensor_dataE(_), alertE(_, _) :>
+    log("Both sensor data and alert received!"),
+    send(logger, log_event(combined_alert, coordinator, multi_trigger)).
 ```
 
 The engine checks past events (received, injected, and internal) for matches. Each event in the list must have occurred at least once.
@@ -370,28 +412,34 @@ The engine checks past events (received, injected, and internal) for matches. Ea
 
 Invariant conditions that are checked every cycle. If a constraint is violated (condition is false), the handler body executes.
 
-**Syntax:**
+**Syntax (DALI — primary):**
 
 ```prolog
-agent:constraint(Condition) :- HandlerBody.     %% with handler
-agent:constraint(Condition).                     %% log-only (no handler)
+:~ Condition :- HandlerBody.     %% with handler
+:~ Condition.                     %% log-only (no handler)
+```
+
+**Alternative syntax (also supported):**
+
+```prolog
+agent:constraint(Condition) :- HandlerBody.
+agent:constraint(Condition).
 ```
 
 **Examples:**
 
 ```prolog
-%% Safety constraint: temperature must stay below 100
-reactor:constraint(believes(temperature(T)), T < 100) :-
-    log("CRITICAL: Temperature constraint violated!"),
-    send(safety_system, emergency_shutdown).
+:- agent(thermostat, [cycle(2)]).
+
+%% Safety constraint: temperature must stay below 50 (DALI :~ syntax)
+:~ (believes(current_temp(T)), T < 50) :-
+    log("CONSTRAINT VIOLATED: Temperature ~w exceeds safe limit!", [T]),
+    send(coordinator, emergency(overheating, T)).
+
+:- agent(server, [cycle(1)]).
 
 %% Invariant: agent must always have a valid config
-server:constraint(believes(config_loaded)).
-
-%% Resource constraint
-pool:constraint(believes(connections(N)), N =< 100) :-
-    log("Too many connections!"),
-    do(reject_new_connections).
+:~ believes(config_loaded).
 ```
 
 When a constraint has no handler body, the engine logs a warning when violated but takes no action.
@@ -402,10 +450,17 @@ When a constraint has no handler body, the engine logs a warning when violated b
 
 Goal-directed behavior. Two types:
 
-- **`achieve`**: keep trying the plan every cycle until the goal condition is met
-- **`test`**: try the plan once, record whether the goal succeeded or failed
+- **`achieve`** (`obt_goal`): keep trying the plan every cycle until the goal condition is met
+- **`test`** (`test_goal`): try the plan once, record whether the goal succeeded or failed
 
-**Syntax:**
+**Syntax (DALI — primary):**
+
+```prolog
+obt_goal(GoalCondition) :- Plan.    %% achieve goal
+test_goal(GoalCondition) :- Plan.   %% test goal
+```
+
+**Alternative syntax (also supported):**
 
 ```prolog
 agent:goal(achieve, GoalCondition) :- Plan.
@@ -415,14 +470,18 @@ agent:goal(test, GoalCondition) :- Plan.
 **Examples:**
 
 ```prolog
-%% Keep sending calibration requests until calibrated
-sensor:goal(achieve, believes(calibrated)) :-
-    send(calibrator, calibrate_request).
+:- agent(sensor, [cycle(2)]).
 
-%% Try once to connect to a database
-server:goal(test, believes(db_connected)) :-
-    do(connect_database),
-    assert_belief(db_connected).
+%% Keep sending calibration requests until calibrated (DALI obt_goal)
+obt_goal(believes(calibrated(true))) :-
+    log("Attempting calibration..."),
+    send(coordinator, calibration_request).
+
+:- agent(coordinator, [cycle(2)]).
+
+%% Test that we have received at least one alert (DALI test_goal)
+test_goal(believes(alerts_received(N)), N > 0) :-
+    log("Testing if any alerts received...").
 ```
 
 **Goal lifecycle:**
@@ -435,15 +494,23 @@ Use `reset_goal(GoalCondition)` in rule bodies to allow a goal to be re-attempte
 
 ## Tell/Told Communication Filtering
 
-Control which messages an agent can send and receive. Inspired by DALI's FIPA-based communication filtering.
+Control which messages an agent can send and receive. Mirrors DALI's `communication.con` filtering.
 
 ### Told (receive filter)
 
 Defines which message patterns an agent is willing to accept.
 
+**Syntax (DALI — primary, `communication.con` style):**
+
 ```prolog
-agent:told(Pattern).                   %% accept messages matching Pattern
-agent:told(Pattern, Priority).         %% accept with priority (numeric)
+told(_, Pattern, Priority) :- true.    %% accept with priority (numeric)
+```
+
+**Alternative syntax (also supported):**
+
+```prolog
+agent:told(Pattern, Priority).         %% accept with priority
+agent:told(Pattern).                   %% accept, default priority 0
 ```
 
 If an agent has **any** `told` rules, only messages matching at least one `told` pattern are accepted. Messages not matching are rejected with a log entry. If an agent has **no** `told` rules, all messages are accepted (backward compatible).
@@ -453,6 +520,14 @@ If an agent has **any** `told` rules, only messages matching at least one `told`
 ### Tell (send filter)
 
 Defines which message patterns an agent is allowed to send.
+
+**Syntax (DALI — primary):**
+
+```prolog
+tell(_, _, Pattern) :- true.           %% allowed to send Pattern
+```
+
+**Alternative syntax (also supported):**
 
 ```prolog
 agent:tell(Pattern).                   %% allowed to send Pattern
@@ -472,30 +547,18 @@ This ensures agents can control what information they share with the AI oracle a
 **Examples:**
 
 ```prolog
-%% Sensor can only send readings
-sensor:tell(reading(_)).
-sensor:tell(status(_)).
+:- agent(coordinator, [cycle(2)]).
 
-%% Coordinator accepts alarms and reports
-coordinator:told(alarm(_,_), 100).     %% high priority
-coordinator:told(report(_,_), 50).     %% lower priority
-coordinator:told(status(_)).           %% default priority 0
+%% Told rules (DALI communication.con style, 3-arg form)
+told(_, emergency(_, _), 200) :- true.     %% highest priority
+told(_, alert(_, _), 100) :- true.
+told(_, sensor_data(_), 30) :- true.
+told(_, calibration_request, 10) :- true.  %% lowest priority
 
-%% Tell/told for AI Oracle:
-%% Agent can query the oracle with analyze(...) terms
-advisor:tell(analyze(_)).
-%% Agent only accepts suggestion(...) responses from the oracle
-advisor:told(suggestion(_), 100).
-advisor:told(recommendation(_,_), 50).
-
-%% In a rule body:
-advisor:on(critical_event(Data)) :-
-    ask_ai(analyze(Data), Response),
-    %% Response will be:
-    %%   - The actual AI response if both tell and told checks pass
-    %%   - blocked(analyze(Data)) if tell rule blocks the query
-    %%   - rejected(RawResponse) if told rule rejects the response
-    log("AI response: ~w", [Response]).
+%% Tell rules (DALI communication.con style, 3-arg form)
+tell(_, _, calibration_done) :- true.
+tell(_, _, log_event(_, _, _)) :- true.
+tell(_, _, analyze(_)) :- true.
 ```
 
 ---
@@ -531,16 +594,20 @@ DALI2 supports FIPA-ACL message types for structured inter-agent communication. 
 **Examples:**
 
 ```prolog
+:- agent(sensor, [cycle(1)]).
+
 %% Confirm a fact to another agent
-sensor:on(measurement_complete(Data)) :-
+measurement_completeE(Data) :>
     send(coordinator, confirm(measurement(Data))).
 
+:- agent(coordinator, [cycle(2)]).
+
 %% Query another agent's beliefs
-coordinator:on(need_status) :-
+need_statusE :>
     send(sensor, query_ref(status(_))).
 
 %% Handle the query response
-coordinator:on(inform(query_ref(Q), values(V))) :-
+informE(query_ref(Q), values(V)) :>
     log("Query ~w returned: ~w", [Q, V]).
 ```
 
@@ -548,12 +615,12 @@ coordinator:on(inform(query_ref(Q), values(V))) :-
 
 ## Action Proposals
 
-The proposal mechanism enables negotiation between agents using FIPA propose/accept/reject.
+The proposal mechanism enables negotiation between agents using FIPA propose/accept/reject. **[NEW in DALI2]**
 
 **Syntax:**
 
 ```prolog
-agent:on_proposal(ActionPattern) :- Body.
+on_proposal(ActionPattern) :- Body.
 ```
 
 When an agent receives a `propose(Action)` message, all matching `on_proposal` handlers fire. Inside the handler, `from(Sender)` retrieves the proposer, and `accept_proposal(To, Action)` or `reject_proposal(To, Action)` send the response.
@@ -561,28 +628,31 @@ When an agent receives a `propose(Action)` message, all matching `on_proposal` h
 **Examples:**
 
 ```prolog
-%% Worker handles proposals
-worker:on_proposal(task(T)) :-
-    believes(available),
-    from(Sender),
-    log("Accepting task ~w from ~w", [T, Sender]),
-    accept_proposal(Sender, task(T)),
-    do(task(T)).
+:- agent(worker, [cycle(2)]).
 
-worker:on_proposal(task(T)) :-
-    not(believes(available)),
+%% Worker handles proposals
+on_proposal(analyze(Data)) :-
+    believes(skill(data_analysis)),
     from(Sender),
-    reject_proposal(Sender, task(T)).
+    log("Accepting analyze(~w) from ~w", [Data, Sender]),
+    accept_proposal(Sender, analyze(Data)),
+    do(analyze(Data)).
+
+on_proposal(impossible_task) :-
+    from(Sender),
+    reject_proposal(Sender, impossible_task).
+
+:- agent(coordinator, [cycle(2)]).
 
 %% Coordinator sends a proposal
-coordinator:on(new_job(J)) :-
-    send(worker, propose(task(J))).
+request_analysisE(Data) :>
+    send(worker, propose(analyze(Data))).
 
 %% Coordinator handles response
-coordinator:on(accept_proposal(task(T))) :-
-    log("Worker accepted: ~w", [T]).
-coordinator:on(reject_proposal(task(T))) :-
-    log("Worker rejected: ~w", [T]).
+accept_proposalE(Action) :>
+    log("Worker accepted: ~w", [Action]).
+reject_proposalE(Action) :>
+    log("Worker rejected: ~w", [Action]).
 ```
 
 ---
@@ -593,9 +663,13 @@ Control how long past events are kept in memory. Mirrors DALI's `past_event/2` a
 
 ### Past Lifetime
 
+**Syntax (DALI — primary):**
+
 ```prolog
-agent:past_lifetime(Pattern, Duration).
+past_event(Pattern, Duration).
 ```
+
+**Alternative syntax:** `agent:past_lifetime(Pattern, Duration).`
 
 When a past event matching `Pattern` exceeds `Duration` seconds, it is moved to the **remember** tier (if a remember lifetime exists) or deleted.
 
@@ -606,33 +680,40 @@ When a past event matching `Pattern` exceeds `Duration` seconds, it is moved to 
 
 ### Remember Lifetime
 
+**Syntax (DALI — primary):**
+
 ```prolog
-agent:remember_lifetime(Pattern, Duration).
+remember_event(Pattern, Duration).
 ```
+
+**Alternative syntax:** `agent:remember_lifetime(Pattern, Duration).`
 
 Expired past events move to the remember tier. When a remember event exceeds its own `Duration`, it is permanently deleted.
 
 ### Remember Limit
 
+**Syntax (DALI — primary):**
+
 ```prolog
-agent:remember_limit(Pattern, N, Mode).
+remember_event_mod(Pattern, number(N), Mode).
 ```
+
+**Alternative syntax:** `agent:remember_limit(Pattern, N, Mode).`
 
 Keep only `N` remember events matching `Pattern`. `Mode` is `last` (keep newest) or `first` (keep oldest).
 
 **Examples:**
 
 ```prolog
-%% Sensor readings expire after 60 seconds, then remembered for 1 hour
-sensor:past_lifetime(sensor_reading(_), 60).
-sensor:remember_lifetime(sensor_reading(_), 3600).
-sensor:remember_limit(sensor_reading(_), 100, last).
+:- agent(sensor, [cycle(2)]).
+
+%% Sensor readings expire after 30 seconds, then remembered for 5 minutes
+past_event(sensor_data(_), 30).
+remember_event(sensor_data(_), 300).
+remember_event_mod(sensor_data(_), number(10), last).
 
 %% Alarms never expire from past
-sensor:past_lifetime(alarm(_), forever).
-
-%% Temporary data expires after 10 seconds, no remember
-worker:past_lifetime(temp_data(_), 10).
+past_event(alarm(_), forever).
 ```
 
 **DSL predicates:**
@@ -646,46 +727,54 @@ worker:past_lifetime(temp_data(_), 10).
 
 Reactive rules that fire when past event patterns match, **consuming** (deleting) the matched past events. Mirrors DALI's `~/`, `</`, `?/` operators.
 
-### on_past (~/)
+### Export Past (~/ operator)
 
 Fires when all listed events exist in past memory, then consumes them.
 
+**Syntax (DALI — primary):**
+
 ```prolog
-agent:on_past([Pattern1, Pattern2, ...]) :- Body.
+Action ~/ past_event1, past_event2.
 ```
 
-### on_past_done (?/)
+**Alternative syntax:** `agent:on_past([Pattern1, Pattern2, ...]) :- Body.`
+
+### Export Past Done (?/ operator)
 
 Fires only if the action WAS done (exists in past as `did(Action)`) and all listed events exist.
 
+**Syntax (DALI — primary):**
+
 ```prolog
-agent:on_past_done(ActionPattern, [Pattern1, ...]) :- Body.
+Action ?/ past_event1, past_event2.
 ```
 
-### on_past_not_done (</)
+**Alternative syntax:** `agent:on_past_done(ActionPattern, [Pattern1, ...]) :- Body.`
+
+### Export Past NOT Done (</ operator)
 
 Fires only if the action was NOT done and all listed events exist.
 
+**Syntax (DALI — primary):**
+
 ```prolog
-agent:on_past_not_done(ActionPattern, [Pattern1, ...]) :- Body.
+Action </ past_event1, past_event2.
 ```
+
+**Alternative syntax:** `agent:on_past_not_done(ActionPattern, [Pattern1, ...]) :- Body.`
 
 **Examples:**
 
 ```prolog
-%% When both alert and reading exist, consume and react
-monitor:on_past([alert(Type), reading(Value)]) :-
-    log("Alert ~w with reading ~w", [Type, Value]),
-    send(coordinator, combined_report(Type, Value)).
+:- agent(coordinator, [cycle(2)]).
 
-%% React only if cleanup was done
-manager:on_past_done(cleanup(_), [old_data(X)]) :-
-    log("Cleanup done, old data ~w consumed", [X]).
+%% When both alert and sensor_data in past, consume and react (DALI ~/ syntax)
+send(logger, log_event(past_consumed, coordinator, [Type, Value])) ~/
+    alert(Type, _), sensor_data(Value).
 
-%% Warn if backup was NOT done but critical data exists
-manager:on_past_not_done(backup(_), [critical_data(X)]) :-
-    log("WARNING: backup not done, critical data ~w!", [X]),
-    send(admin, urgent_backup(X)).
+%% Warn if backup was NOT done but critical data exists (DALI </ syntax)
+log("Backup NOT done! critical_data needs attention!") </
+    critical_data(_).
 ```
 
 The matched past events are **consumed** (removed from past memory) when the rule fires. This prevents the rule from firing again with the same events.
@@ -699,11 +788,14 @@ When `achieve(Goal)` is called in a rule body but the goal condition is not yet 
 This mirrors DALI's `residue_goal` / `tenta_residuo` mechanism.
 
 ```prolog
-%% The achieve call queues the goal as residue if not immediately satisfiable
-agent:on(start_task) :-
-    achieve(has_past(data_ready)).
+:- agent(coordinator, [cycle(2)]).
 
-%% Later, when data_ready is injected, the residue goal resolves automatically
+%% The achieve call queues the goal as residue if not immediately satisfiable
+start_residue_testE :>
+    log("Starting residue goal test..."),
+    achieve(has_past(residue_resolved)).
+
+%% Later, when residue_resolved is injected, the residue goal resolves automatically
 ```
 
 **Lifecycle:**
@@ -716,30 +808,31 @@ agent:on(start_task) :-
 
 ## Ontology Declarations
 
-Define semantic equivalences between terms. Ontology declarations make event matching, belief checking, and condition evaluation aware of synonyms and equivalences.
+Define semantic equivalences between terms. **[NEW in DALI2]** — replaces DALI's OWL/`meta/3` ontology with a simpler Prolog-native format. Ontology declarations make event matching, belief checking, and condition evaluation aware of synonyms and equivalences.
 
 **Syntax:**
 
 ```prolog
-agent:ontology(same_as(Term1, Term2)).           %% Term1 and Term2 are synonyms
-agent:ontology(eq_property(Functor1, Functor2)). %% Functors are equivalent properties
-agent:ontology(eq_class(Class1, Class2)).         %% Classes are equivalent
-agent:ontology(symmetric(Relation)).              %% Relation(A,B) = Relation(B,A)
+ontology(same_as(Term1, Term2)).           %% Term1 and Term2 are synonyms
+ontology(eq_property(Functor1, Functor2)). %% Functors are equivalent properties
+ontology(eq_class(Class1, Class2)).         %% Classes are equivalent
+ontology(symmetric(Relation)).              %% Relation(A,B) = Relation(B,A)
 ```
 
 **Examples:**
 
 ```prolog
-agent:ontology(same_as(hot, warm)).
-agent:ontology(eq_property(temperature, temp)).
-agent:ontology(eq_class(vehicle, car)).
-agent:ontology(symmetric(near)).
+:- agent(logger, [cycle(2)]).
+
+ontology(same_as(log_event, log_entry)).
+ontology(eq_property(log_event, record)).
+ontology(symmetric(related_to)).
 ```
 
 **Effects:**
 - `believes(warm(room1))` will match a belief `hot(room1)` if `same_as(hot, warm)` is declared
-- `on(temp(30))` will match an incoming event `temperature(30)` if `eq_property(temperature, temp)` is declared
-- `on(near(a, b))` will match an incoming event `near(b, a)` if `symmetric(near)` is declared
+- `readingE(temp(30))` will match an incoming event `reading(temperature(30))` if `eq_property(temperature, temp)` is declared
+- `nearE(a, b)` will match an incoming event `near(b, a)` if `symmetric(near)` is declared
 - Use `onto_match(T1, T2)` in rule bodies to explicitly check ontology equivalence
 
 ### Ontology File Loading
@@ -747,7 +840,7 @@ agent:ontology(symmetric(near)).
 Load ontology declarations from an external Prolog file:
 
 ```prolog
-agent:ontology_file('path/to/ontology.pl').
+ontology_file('path/to/ontology.pl').
 ```
 
 The file should contain `same_as/2`, `eq_property/2`, `eq_class/2`, and/or `symmetric/1` facts:
@@ -760,19 +853,19 @@ eq_class(sensor, detector).
 symmetric(connected_to).
 ```
 
-Ontology files are loaded when the agent starts. This mirrors DALI's OWL/external ontology support with a simpler Prolog-native format.
+Ontology files are loaded when the agent starts.
 
 ---
 
 ## Learning Rules
 
-Agents can learn from experience. Learning rules are triggered when matching events occur. Learned associations are stored and can be queried later.
+Agents can learn from experience. **[NEW in DALI2]** Learning rules are triggered when matching events occur. Learned associations are stored and can be queried later.
 
 **Syntax:**
 
 ```prolog
-agent:learn_from(EventPattern, Outcome) :- Condition.
-agent:learn_from(EventPattern, Outcome).              %% unconditional
+learn_from(EventPattern, Outcome) :- Condition.
+learn_from(EventPattern, Outcome).              %% unconditional
 ```
 
 When an event matching `EventPattern` occurs (received, injected, or internal), and `Condition` succeeds, the agent records `learned(Event, Outcome)`.
@@ -780,26 +873,27 @@ When an event matching `EventPattern` occurs (received, injected, or internal), 
 **Examples:**
 
 ```prolog
+:- agent(sensor, [cycle(2)]).
+
 %% Learn that high readings indicate overheating
-sensor:learn_from(reading(T), overheating) :- T > 80.
+learn_from(read_temp(T), overheating) :- T > 80.
 
 %% Learn that low readings are normal
-sensor:learn_from(reading(T), normal) :- T =< 80.
-
-%% Unconditional learning
-logger:learn_from(error(_), incident).
+learn_from(read_temp(T), normal) :- T =< 80.
 ```
 
 **Using learned knowledge in rules:**
 
 ```prolog
-analyzer:on(new_reading(T)) :-
-    ( learned(reading(_), overheating) ->
-        log("Previously learned overheating pattern"),
-        send(alarm, warning(T))
+read_tempE(T) :>
+    log("Sensor read: ~w", [T]),
+    ( learned(read_temp(_), overheating) ->
+        log("WARNING: Previously learned overheating pattern!"),
+        send(coordinator, alert(repeated_overheating, T))
     ;
-        log("No overheating pattern learned yet")
-    ).
+        true
+    ),
+    send(coordinator, sensor_data(T)).
 ```
 
 **DSL predicates for learning:**
@@ -813,7 +907,15 @@ analyzer:on(new_reading(T)) :-
 
 Named, reusable actions. Actions are recorded in past memory as `did(Action)`.
 
-**Syntax:**
+**Syntax (DALI — primary):**
+
+```prolog
+actionA(Args) :- Body.
+```
+
+The `A` suffix marks action definitions.
+
+**Alternative syntax (also supported):**
 
 ```prolog
 agent:do(ActionPattern) :- Body.
@@ -822,21 +924,20 @@ agent:do(ActionPattern) :- Body.
 **Examples:**
 
 ```prolog
-robot:do(move_forward(Distance)) :-
-    log("Moving forward ~w meters", [Distance]),
-    assert_belief(position_changed).
+:- agent(worker, [cycle(2)]).
 
-robot:do(turn(Degrees)) :-
-    log("Turning ~w degrees", [Degrees]).
+%% Action definition (DALI A suffix style)
+analyzeA(Data) :-
+    log("Executing analysis: ~w", [Data]),
+    assert_belief(analysis_complete(Data)),
+    send(coordinator, inform(analysis_result(Data), complete)).
 ```
 
 **Calling actions:**
 
 ```prolog
-robot:on(navigate(X, Y)) :-
-    do(move_forward(10)),
-    do(turn(90)),
-    do(move_forward(5)).
+request_analysisE(Data) :>
+    do(analyze(Data)).
 ```
 
 ---
@@ -848,15 +949,17 @@ Initial beliefs are declared as facts. Beliefs can be added and removed at runti
 **Syntax:**
 
 ```prolog
-agent:believes(Fact).
+believes(Fact).
 ```
 
 **Examples:**
 
 ```prolog
-robot:believes(battery_level(100)).
-robot:believes(position(0, 0)).
-server:believes(status(idle)).
+:- agent(thermostat, [cycle(2)]).
+
+believes(target_temp(22)).
+believes(current_temp(20)).
+believes(mode(idle)).
 ```
 
 **Runtime operations:**
@@ -868,25 +971,23 @@ server:believes(status(idle)).
 
 ## Helpers
 
-Utility predicates that can be called from rule bodies.
+Utility predicates that can be called from rule bodies. **[NEW in DALI2]**
 
 **Syntax:**
 
 ```prolog
-agent:helper(Head) :- Body.
+helper(Head) :- Body.
 ```
 
 **Examples:**
 
 ```prolog
-math_agent:helper(fibonacci(0, 0)).
-math_agent:helper(fibonacci(1, 1)).
-math_agent:helper(fibonacci(N, F)) :-
-    N > 1,
-    N1 is N - 1, N2 is N - 2,
-    helper(fibonacci(N1, F1)),
-    helper(fibonacci(N2, F2)),
-    F is F1 + F2.
+:- agent(logger, [cycle(2)]).
+
+helper(count_logs) :-
+    findall(_, believes(logged(_, _)), Logs),
+    length(Logs, N),
+    log("Total log entries: ~w", [N]).
 ```
 
 ---
@@ -1018,42 +1119,42 @@ Every event is recorded in past memory with a timestamp and source type:
 - `goal_achieved(Goal)` — goal that was achieved
 - `confirmed(Fact)` — fact confirmed via FIPA confirm
 
-Past events can have **lifetimes** (via `past_lifetime`) and move to a **remember** tier when they expire.
+Past events can have **lifetimes** (via `past_event/2`) and move to a **remember** tier when they expire.
 
 ---
 
 ## DALI Syntax in DALI2
 
-DALI2 now uses the **same syntax** as the original DALI, with an `agent:` prefix for multi-agent files. Both DALI and DALI2 syntax are accepted by the loader.
+DALI2 uses the **same syntax** as the original DALI. No agent prefix is needed — use `:- agent(name).` to set context. Both DALI and alternative DALI2 syntax are accepted by the loader.
 
-| Feature | DALI (SICStus) | DALI2 (SWI-Prolog) — DALI syntax | DALI2 — alternative syntax |
-|---------|----------------|----------------------------------|---------------------------|
-| External event | `eventE(X) :> body.` | `agent:eventE(X) :> body.` | `agent:on(event(X)) :- body.` |
-| Internal event | `eventI(X) :> body.` + `internal_event/5` | `agent:eventI(X) :> body.` + `agent:internal_event/5` | `agent:internal(ev, [opts]) :- body.` |
-| Condition-action | `cond :< action.` | `agent:cond :< action.` | `agent:on_change(cond) :- action.` |
-| Present event | suffix N: `condN :- body.` | `agent:condN :- body.` | `agent:on_present(cond) :- body.` |
-| Multi-events | `ev1E, ev2E :> body.` | `agent:ev1E, ev2E :> body.` | `agent:on_all([ev1, ev2]) :- body.` |
-| Constraint | `:~ constraint.` | `agent :~ constraint.` | `agent:constraint(cond) :- handler.` |
-| Export past (~/) | `head ~/ past1, past2.` | `agent:head ~/ past1, past2.` | `agent:on_past([events]) :- body.` |
-| Export past (</) | `head </ past1, past2.` | `agent:head </ past1, past2.` | `agent:on_past_not_done(action, [events]) :- body.` |
-| Export past (?/) | `head ?/ past1, past2.` | `agent:head ?/ past1, past2.` | `agent:on_past_done(action, [events]) :- body.` |
-| Action definition | `actionA(X) :- body.` | `agent:actionA(X) :- body.` | `agent:do(action(X)) :- body.` |
-| Obtain goal | `obt_goal(goal)` | `agent:obt_goal(goal) :- plan.` | `agent:goal(achieve, goal) :- plan.` |
-| Test goal | `test_goal(goal)` | `agent:test_goal(goal) :- plan.` | `agent:goal(test, goal) :- plan.` |
-| Past lifetime | `past_event(ev, 60).` | `agent:past_event(ev, 60).` | `agent:past_lifetime(ev, 60).` |
-| Remember | `remember_event(ev, 3600).` | `agent:remember_event(ev, 3600).` | `agent:remember_lifetime(ev, 3600).` |
-| Remember limit | `remember_event_mod(ev, number(5), last).` | `agent:remember_event_mod(ev, number(5), last).` | `agent:remember_limit(ev, 5, last).` |
-| Told | `told(_, pattern, priority).` | `agent:told(_, pattern, priority).` | `agent:told(pattern, priority).` |
-| Tell | `tell(_, _, pattern).` | `agent:tell(_, _, pattern).` | `agent:tell(pattern).` |
+| Feature | DALI (SICStus) | DALI2 (SWI-Prolog) — primary | Alternative syntax |
+|---------|----------------|------------------------------|--------------------|
+| External event | `eventE(X) :> body.` | `eventE(X) :> body.` | `agent:on(event(X)) :- body.` |
+| Internal event | `eventI :> body.` + `internal_event/5` | `eventI :> body.` + `internal_event/5` | `agent:internal(ev, [opts]) :- body.` |
+| Condition-action | `cond :< action.` | `cond :< action.` | `agent:on_change(cond) :- action.` |
+| Present event | `condN :- body.` | `condN :- body.` | `agent:on_present(cond) :- body.` |
+| Multi-events | `ev1E, ev2E :> body.` | `ev1E, ev2E :> body.` | `agent:on_all([ev1, ev2]) :- body.` |
+| Constraint | `:~ constraint.` | `:~ constraint.` | `agent:constraint(cond) :- handler.` |
+| Export past (~/) | `head ~/ past1, past2.` | `head ~/ past1, past2.` | `agent:on_past([events]) :- body.` |
+| Export past (</) | `head </ past1, past2.` | `head </ past1, past2.` | `agent:on_past_not_done(action, [events]) :- body.` |
+| Export past (?/) | `head ?/ past1, past2.` | `head ?/ past1, past2.` | `agent:on_past_done(action, [events]) :- body.` |
+| Action definition | `actionA(X) :- body.` | `actionA(X) :- body.` | `agent:do(action(X)) :- body.` |
+| Obtain goal | `obt_goal(goal) :- plan.` | `obt_goal(goal) :- plan.` | `agent:goal(achieve, goal) :- plan.` |
+| Test goal | `test_goal(goal) :- plan.` | `test_goal(goal) :- plan.` | `agent:goal(test, goal) :- plan.` |
+| Past lifetime | `past_event(ev, 60).` | `past_event(ev, 60).` | `agent:past_lifetime(ev, 60).` |
+| Remember | `remember_event(ev, 3600).` | `remember_event(ev, 3600).` | `agent:remember_lifetime(ev, 3600).` |
+| Remember limit | `remember_event_mod(ev, number(5), last).` | `remember_event_mod(ev, number(5), last).` | `agent:remember_limit(ev, 5, last).` |
+| Told | `told(_, pattern, pri) :- true.` | `told(_, pattern, pri) :- true.` | `agent:told(pattern, priority).` |
+| Tell | `tell(_, _, pattern) :- true.` | `tell(_, _, pattern) :- true.` | `agent:tell(pattern).` |
 | Send message | `messageA(dest, send_message(content, Me))` | Same (in body) | `send(dest, content)` |
 | Past check | `evp(event)` / `eventP(args)` | Same (in body) | `has_past(event)` |
 | Residue goal | `tenta_residuo(goal)` | Same (in body) | `achieve(goal)` |
 | Belief check | `clause(isa(fact,_,_),_)` | Same (in body) | `believes(fact)` |
-| Ontology | `meta/3` + OWL | `agent:ontology(same_as(a,b)).` **[NEW]** | — |
-| Learning | `learning.pl` | `agent:learn_from(event, outcome) :- cond.` **[NEW]** | — |
-| Periodic | — | `agent:every(seconds, goal).` **[NEW]** | — |
-| Condition monitor | — | `agent:when(condition) :- body.` **[NEW]** | — |
-| Helper | — | `agent:helper(head) :- body.` **[NEW]** | — |
-| Proposal handler | — | `agent:on_proposal(action) :- body.` **[NEW]** | — |
+| Ontology | `meta/3` + OWL | `ontology(same_as(a,b)).` **[NEW]** | — |
+| Learning | — | `learn_from(event, outcome) :- cond.` **[NEW]** | — |
+| Periodic | — | `every(seconds, goal).` **[NEW]** | — |
+| Condition monitor | — | `when(condition) :- body.` **[NEW]** | — |
+| Helper | — | `helper(head) :- body.` **[NEW]** | — |
+| Proposal handler | — | `on_proposal(action) :- body.` **[NEW]** | — |
 | AI Oracle | — | `ask_ai(context, result)` (in body) **[NEW]** | — |
 | Blackboard | Linda (TCP) | `bb_read`/`bb_write`/`bb_remove` (in body) **[NEW]** | — |

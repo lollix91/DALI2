@@ -27,25 +27,27 @@
 :- agent(soil_sensor, [cycle(1)]).
 
 %% Receive soil reading, store state for internal event validation
-soil_sensor:on(read_soil(Moisture, PH, Field)) :-
+read_soilE(Moisture, PH, Field) :>
     log("Soil reading: M=~w pH=~w Field=~w", [Moisture, PH, Field]),
     assert_belief(soil_state(Moisture, PH, Field)),
     send(logger, log_event(soil_reading, soil_sensor, [Moisture, PH, Field])).
 
 %% Internal event: abnormal soil → send report to crop_advisor
-soil_sensor:internal(soil_alert_check, [forever]) :-
+soil_alert_checkI :>
     believes(soil_state(Moisture, PH, Field)),
     (Moisture < 30 ; Moisture > 80 ; PH < 5.5 ; PH > 7.5),
     log("SOIL ALERT: M=~w pH=~w Field=~w", [Moisture, PH, Field]),
     retract_belief(soil_state(Moisture, PH, Field)),
     send(crop_advisor, soil_report(Moisture, PH, Field)).
+internal_event(soil_alert_check, 0, forever, true, forever).
 
 %% Internal event: normal soil — just clear state and log
-soil_sensor:internal(soil_normal_check, [forever]) :-
+soil_normal_checkI :>
     believes(soil_state(Moisture, PH, Field)),
     Moisture >= 30, Moisture =< 80, PH >= 5.5, PH =< 7.5,
     log("SOIL NORMAL: M=~w pH=~w Field=~w", [Moisture, PH, Field]),
     retract_belief(soil_state(Moisture, PH, Field)).
+internal_event(soil_normal_check, 0, forever, true, forever).
 
 %% ============================================================
 %% WEATHER MONITOR — receives weather data, validates via internal events
@@ -58,25 +60,27 @@ soil_sensor:internal(soil_normal_check, [forever]) :-
 :- agent(weather_monitor, [cycle(1)]).
 
 %% Receive weather update, store state for internal event validation
-weather_monitor:on(weather_update(Temp, Humidity, Forecast)) :-
+weather_updateE(Temp, Humidity, Forecast) :>
     log("Weather: T=~w H=~w F=~w", [Temp, Humidity, Forecast]),
     assert_belief(weather_state(Temp, Humidity, Forecast)),
     send(logger, log_event(weather_reading, weather_monitor, [Temp, Humidity, Forecast])).
 
 %% Internal event: weather risk → send alert to crop_advisor
-weather_monitor:internal(weather_risk_check, [forever]) :-
+weather_risk_checkI :>
     believes(weather_state(Temp, Humidity, Forecast)),
     (Temp > 38 ; Temp < 2 ; Humidity < 20 ; Forecast = storm),
     log("WEATHER RISK: T=~w H=~w F=~w", [Temp, Humidity, Forecast]),
     retract_belief(weather_state(Temp, Humidity, Forecast)),
     send(crop_advisor, weather_alert(Temp, Humidity, Forecast)).
+internal_event(weather_risk_check, 0, forever, true, forever).
 
 %% Internal event: normal weather — just clear state
-weather_monitor:internal(weather_normal_check, [forever]) :-
+weather_normal_checkI :>
     believes(weather_state(Temp, Humidity, Forecast)),
     Temp =< 38, Temp >= 2, Humidity >= 20, Forecast \= storm,
     log("WEATHER NORMAL: T=~w H=~w F=~w", [Temp, Humidity, Forecast]),
     retract_belief(weather_state(Temp, Humidity, Forecast)).
+internal_event(weather_normal_check, 0, forever, true, forever).
 
 %% ============================================================
 %% CROP ADVISOR — analyzes data with AI, decides actions
@@ -88,7 +92,7 @@ weather_monitor:internal(weather_normal_check, [forever]) :-
 :- agent(crop_advisor, [cycle(1)]).
 
 %% Handle soil report from sensor
-crop_advisor:on(soil_report(Moisture, PH, Field)) :-
+soil_reportE(Moisture, PH, Field) :>
     log("Analyzing soil for ~w: M=~w pH=~w", [Field, Moisture, PH]),
     %% AI analysis if available
     ( ai_available ->
@@ -115,7 +119,7 @@ crop_advisor:on(soil_report(Moisture, PH, Field)) :-
     ).
 
 %% Handle weather alert from monitor
-crop_advisor:on(weather_alert(Temp, Humidity, Forecast)) :-
+weather_alertE(Temp, Humidity, Forecast) :>
     log("Weather alert: T=~w H=~w F=~w", [Temp, Humidity, Forecast]),
     %% AI analysis if available
     ( ai_available ->
@@ -146,13 +150,13 @@ crop_advisor:on(weather_alert(Temp, Humidity, Forecast)) :-
 
 :- agent(irrigation_controller, [cycle(1)]).
 
-irrigation_controller:on(irrigate(Field)) :-
+irrigateE(Field) :>
     log("Activating irrigation for ~w", [Field]),
     assert_belief(irrigation_state(active, Field)),
     send(farmer_agent, status(irrigating, Field)),
     send(logger, log_event(irrigation_started, irrigation_controller, [Field])).
 
-irrigation_controller:on(reduce_water(Field)) :-
+reduce_waterE(Field) :>
     log("Reducing water for ~w", [Field]),
     assert_belief(irrigation_state(reduced, Field)),
     send(farmer_agent, status(water_reduced, Field)),
@@ -164,10 +168,10 @@ irrigation_controller:on(reduce_water(Field)) :-
 
 :- agent(farmer_agent, [cycle(1)]).
 
-farmer_agent:on(advisory(Action, Field)) :-
+advisoryE(Action, Field) :>
     log("ADVISORY: ~w for field ~w", [Action, Field]).
 
-farmer_agent:on(status(State, Field)) :-
+statusE(State, Field) :>
     log("STATUS UPDATE: ~w at field ~w", [State, Field]).
 
 %% ============================================================
@@ -176,5 +180,5 @@ farmer_agent:on(status(State, Field)) :-
 
 :- agent(logger, [cycle(1)]).
 
-logger:on(log_event(Type, Source, Data)) :-
+log_eventE(Type, Source, Data) :>
     log("LOG [~w] from ~w: ~w", [Type, Source, Data]).
