@@ -18,8 +18,8 @@
 :- dynamic ai_api_key/1.
 :- dynamic ai_model/1.
 
-%% Default model (OpenRouter format)
-ai_model('openai/gpt-4o-mini').
+%% Default model (OpenRouter format — free tier)
+ai_model('google/gemini-2.0-flash-exp:free').
 
 %% ============================================================
 %% CONFIGURATION

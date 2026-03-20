@@ -95,9 +95,11 @@ work_hours_checkI :>
 internal_event(work_hours_check, 10, forever, true, in_date(time(0,0), time(23,59))).
 
 %% Constraint: temperature must stay below 50 (DALI :~ syntax)
-:~ (believes(current_temp(T)), T < 50) :-
+%% Left side = condition that should hold; right side = handler if violated
+(believes(current_temp(T)), T < 50) :~ (
     log("CONSTRAINT VIOLATED: Temperature ~w exceeds safe limit!", [T]),
-    send(coordinator, emergency(overheating, T)).
+    send(coordinator, emergency(overheating, T))
+).
 
 %% Condition-action rule (DALI :< syntax, edge-triggered)
 believes(mode(cooling)) :< (
@@ -149,8 +151,10 @@ remember_event_mod(sensor_data(_), number(10), last).
 %% Periodic task: heartbeat every 15 seconds [NEW]
 every(15, log("Sensor heartbeat")).
 
-%% Present event (N suffix — monitor blackboard via on_present)
-sensor:on_present(bb_read(environment(temp, T))) :-
+%% Present event (N suffix — monitor blackboard, consume after reading)
+env_checkN :-
+    bb_read(environment(temp, T)),
+    bb_remove(environment(temp, T)),
     log("PRESENT: Environment temperature from blackboard: ~w", [T]),
     send(thermostat, update_temp(T)).
 
@@ -214,6 +218,12 @@ told(_, query_ref(_), 60) :- true.
 told(_, notify(_, _), 50) :- true.
 told(_, sensor_data(_), 30) :- true.
 told(_, calibration_request, 10) :- true.       %% lowest priority
+told(_, send_confirm(_), 90) :- true.
+told(_, query_worker(_), 60) :- true.
+told(_, request_analysis(_), 70) :- true.
+told(_, test_reject, 70) :- true.
+told(_, start_residue_test, 50) :- true.
+told(_, critical_data(_), 50) :- true.
 
 %% Tell rules (DALI communication.con style, 3-arg form)
 tell(_, _, calibration_done) :- true.

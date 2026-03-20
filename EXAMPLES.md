@@ -10,8 +10,7 @@ DALI2 now supports **DALI-compatible syntax** — the same operators (`:>`, `:<`
 - [1. Smart Agriculture (`agriculture.pl`)](#1-smart-agriculture)
 - [2. Emergency Response (`emergency.pl`)](#2-emergency-response)
 - [3. Feature Showcase (`showcase.pl`)](#3-feature-showcase)
-- [4. Feature Showcase — DALI syntax reference (`showcase_dali.pl`)](#4-feature-showcase--dali-syntax-reference)
-- [5. Distributed Emergency (`emergency_sensors.pl` + `emergency_responders.pl`)](#5-distributed-emergency)
+- [4. Distributed Emergency (`emergency_sensors.pl` + `emergency_responders.pl`)](#4-distributed-emergency)
 - [API Quick Reference](#api-quick-reference)
 
 ---
@@ -20,17 +19,43 @@ DALI2 now supports **DALI-compatible syntax** — the same operators (`:>`, `:<`
 
 ### With Docker
 
+Docker Compose starts Redis automatically — no separate install needed.
+
+**Linux / macOS:**
 ```bash
-# Single instance
-AGENT_FILE=examples/agriculture.pl docker compose up --build
+# Default (agriculture example)
+docker compose up --build
+
+# Choose agent file
+AGENT_FILE=examples/emergency.pl docker compose up --build
 
 # Distributed (two nodes)
 docker compose -f docker-compose.distributed.yml up --build
 ```
 
-### With SWI-Prolog (local)
+**PowerShell (Windows):**
+```powershell
+# Default (agriculture example)
+docker compose up --build
+
+# Choose agent file
+$env:AGENT_FILE="examples/emergency.pl"; docker compose up --build
+
+# Distributed (two nodes)
+docker compose -f docker-compose.distributed.yml up --build
+```
+
+### Without Docker (SWI-Prolog + Redis)
+
+**Redis must be running** before starting DALI2 (see [Prerequisites](README.md#prerequisites) in README).
 
 ```bash
+# Step 1: Start Redis (if not already running)
+redis-server                # local install
+# or
+docker run -d --name dali2-redis -p 6379:6379 redis:7-alpine   # via Docker
+
+# Step 2: Start DALI2
 swipl -l src/server.pl -g main -- 8080 examples/agriculture.pl
 ```
 
@@ -44,7 +69,21 @@ After starting, open **http://localhost:8080** for the web UI.
 
 ### Sending Events
 
-All examples use the REST API to inject events.
+You can send events to agents via the **Web UI** or the **REST API**.
+
+#### Option A: Web UI (recommended for interactive testing)
+
+1. Open **http://localhost:8080** in your browser
+2. In the **Send Event** panel (top-right area):
+   - **To**: select the target agent from the dropdown (e.g. `sensor`)
+   - **Content**: type the event term (e.g. `read_temp(85)`)
+   - Click **Send**
+3. Watch the **Event Log** panel (center) for real-time results
+4. Click any agent name in the **Agents** panel (left) to inspect its beliefs, past events, and goals
+
+> **Tip:** The "Send Event" panel uses the `/api/send` endpoint. For direct injection (bypasses normal message routing), use the REST API with `/api/inject`.
+
+#### Option B: REST API (curl)
 
 **PowerShell (Windows):**
 
@@ -101,9 +140,25 @@ A precision agriculture system with 6 agents. Sensors validate readings via **in
 swipl -l src/server.pl -g main -- 8080 examples/agriculture.pl
 ```
 
+#### Via Web UI
+
+Open http://localhost:8080 and use the **Send Event** panel:
+
+| Step | To | Content | Expected |
+|------|----|---------|----------|
+| 1 | `soil_sensor` | `read_soil(25, 6.5, north_field)` | Low moisture → irrigate north_field |
+| 2 | `soil_sensor` | `read_soil(85, 6.5, south_field)` | High moisture → reduce_water south_field |
+| 3 | `soil_sensor` | `read_soil(50, 6.8, east_field)` | Normal soil → "SOIL NORMAL", no action |
+| 4 | `weather_monitor` | `weather_update(40, 15, sunny)` | Drought risk → irrigate all_fields |
+| 5 | `weather_monitor` | `weather_update(0, 60, clear)` | Frost warning → advisory to farmer |
+
+Click any agent in the **Agents** panel to inspect beliefs and past events.
+
+#### Via REST API (curl)
+
 ```powershell
 # 1. Low moisture (25 < 30) → soil alert → irrigate
-curl.exe -X POST http://localhost:8080/api/inject -H "Content-Type: application/json" -d "{""agent"":""soil_sensor"",""event"":""read_soil(25, 6.5, north_field)""}"
+curl.exe -X POST http://localhost:8080/api/send -H "Content-Type: application/json" -d "{""to"":""soil_sensor"",""content"":""read_soil(25, 6.5, north_field)""}"
 ```
 
 **Expected flow:**
@@ -118,28 +173,28 @@ irrigation_controller → farmer_agent: status(irrigating, north_field)
 
 ```powershell
 # 2. High moisture (85 > 80) → reduce water
-curl.exe -X POST http://localhost:8080/api/inject -H "Content-Type: application/json" -d "{""agent"":""soil_sensor"",""event"":""read_soil(85, 6.5, south_field)""}"
+curl.exe -X POST http://localhost:8080/api/send -H "Content-Type: application/json" -d "{""to"":""soil_sensor"",""content"":""read_soil(85, 6.5, south_field)""}"
 ```
 
 **Expected:** soil alert → crop_advisor sends `reduce_water(south_field)` to irrigation controller.
 
 ```powershell
 # 3. Normal soil (50, 6.8) → no action
-curl.exe -X POST http://localhost:8080/api/inject -H "Content-Type: application/json" -d "{""agent"":""soil_sensor"",""event"":""read_soil(50, 6.8, east_field)""}"
+curl.exe -X POST http://localhost:8080/api/send -H "Content-Type: application/json" -d "{""to"":""soil_sensor"",""content"":""read_soil(50, 6.8, east_field)""}"
 ```
 
 **Expected:** internal soil_normal_check fires — "SOIL NORMAL" logged, no report sent.
 
 ```powershell
 # 4. Drought risk (temp > 38) → emergency irrigation
-curl.exe -X POST http://localhost:8080/api/inject -H "Content-Type: application/json" -d "{""agent"":""weather_monitor"",""event"":""weather_update(40, 15, sunny)""}"
+curl.exe -X POST http://localhost:8080/api/send -H "Content-Type: application/json" -d "{""to"":""weather_monitor"",""content"":""weather_update(40, 15, sunny)""}"
 ```
 
 **Expected:** weather risk → crop_advisor sends `irrigate(all_fields)` + `advisory(drought_risk)`.
 
 ```powershell
 # 5. Frost warning (temp < 2)
-curl.exe -X POST http://localhost:8080/api/inject -H "Content-Type: application/json" -d "{""agent"":""weather_monitor"",""event"":""weather_update(0, 60, clear)""}"
+curl.exe -X POST http://localhost:8080/api/send -H "Content-Type: application/json" -d "{""to"":""weather_monitor"",""content"":""weather_update(0, 60, clear)""}"
 ```
 
 **Expected:** weather risk → `advisory(frost_warning, all_fields)` to farmer.
@@ -186,9 +241,23 @@ A 9-agent emergency response system. The sensor validates alarms via **internal 
 swipl -l src/server.pl -g main -- 8080 examples/emergency.pl
 ```
 
+#### Via Web UI
+
+Open http://localhost:8080 and use the **Send Event** panel:
+
+| Step | To | Content | Expected |
+|------|----|---------|----------|
+| 1 | `sensor` | `sense(fire, building_a)` | Fire emergency → full multi-step response chain |
+| 2 | `sensor` | `sense(wind, park)` | False alarm → "FALSE ALARM: wind at park" |
+| 3 | `sensor` | `sense(earthquake, downtown)` | Earthquake → bulldozer selected, same chain |
+
+Click `coordinator` in the **Agents** panel to inspect beliefs (pending_location, equipment_ready, etc.).
+
+#### Via REST API (curl)
+
 ```powershell
 # 1. Fire emergency — full multi-step flow
-curl.exe -X POST http://localhost:8080/api/inject -H "Content-Type: application/json" -d "{""agent"":""sensor"",""event"":""sense(fire, building_a)""}"
+curl.exe -X POST http://localhost:8080/api/send -H "Content-Type: application/json" -d "{""to"":""sensor"",""content"":""sense(fire, building_a)""}"
 ```
 
 **Expected flow:**
@@ -206,14 +275,14 @@ coordinator internal check_done: evacuated + responded → "EMERGENCY RESOLVED"
 
 ```powershell
 # 2. False alarm — wind is not in [smoke, fire, earthquake]
-curl.exe -X POST http://localhost:8080/api/inject -H "Content-Type: application/json" -d "{""agent"":""sensor"",""event"":""sense(wind, park)""}"
+curl.exe -X POST http://localhost:8080/api/send -H "Content-Type: application/json" -d "{""to"":""sensor"",""content"":""sense(wind, park)""}"
 ```
 
 **Expected:** internal check_false_alarm fires — "FALSE ALARM: wind at park". No alarm sent to coordinator.
 
 ```powershell
 # 3. Earthquake (different equipment)
-curl.exe -X POST http://localhost:8080/api/inject -H "Content-Type: application/json" -d "{""agent"":""sensor"",""event"":""sense(earthquake, downtown)""}"
+curl.exe -X POST http://localhost:8080/api/send -H "Content-Type: application/json" -d "{""to"":""sensor"",""content"":""sense(earthquake, downtown)""}"
 ```
 
 **Expected:** manager selects bulldozer, same multi-step flow as fire.
@@ -285,6 +354,20 @@ Demonstrates **all 32 DALI2 features** in a single file using **DALI syntax** (`
 # Start the showcase
 swipl -l src/server.pl -g main -- 8080 examples/showcase.pl
 ```
+
+#### Via Web UI
+
+Open http://localhost:8080 and use the **Send Event** panel. Steps 1–2 use "Send" (message routing); steps 3–8 require the REST API with `/api/inject` (direct injection).
+
+| Step | To | Content | Expected |
+|------|----|---------|----------|
+| 1 | `sensor` | `read_temp(85)` | Learning, blackboard, present event, cooling mode, constraint violation |
+| 2 | `sensor` | `read_temp(90)` | Learned pattern warning, multi-event fires |
+| 10 | `thermostat` | `update_temp(20)` | Constraint resolves, mode → idle |
+
+Steps 3–9 inject events directly into the coordinator (FIPA, export past, residue goals). Use curl or the REST API for these — see below.
+
+#### Via REST API (curl)
 
 **Automatic behavior on startup:**
 - thermostat: `temp_check` fires every 5s (interval), `startup_diagnostic` fires 3 times (change resets on temp change), `work_hours_check` fires (between), `cooling_monitor` does NOT fire (mode=idle)
@@ -393,37 +476,7 @@ curl.exe http://localhost:8080/api/blackboard
 
 ---
 
-## 4. Feature Showcase — DALI Syntax Reference
-
-**File:** `examples/showcase_dali.pl`
-
-A lighter version of the feature showcase, also written in **DALI syntax** (same as `showcase.pl`). Both files use the same DALI operators and suffixes — no agent prefix needed, just `:- agent(name).` context declarations.
-
-Both files demonstrate DALI syntax:
-- `E` suffix + `:>` for external events
-- `I` suffix + `:>` + `internal_event/5` for internal events
-- `A` suffix for actions
-- `:<` for condition-action rules
-- `:~` for constraints
-- `~/` / `</` for export past rules
-- `obt_goal` / `test_goal` for goals
-- `past_event/2`, `remember_event/2`, `remember_event_mod/3` for past lifetime
-- `told/3`, `tell/3` for communication filtering (DALI `communication.con` style)
-
-Additional features are integrated without prefix:
-- `every`, `when`, `helper`, `on_proposal`, `learn_from`, `ontology`, `ontology_file`, `bb_read`/`bb_write`/`bb_remove`
-
-### Running
-
-```bash
-swipl -l src/server.pl -g main -- 8080 examples/showcase_dali.pl
-```
-
-The test commands are the same as for `showcase.pl` (see section 3 above).
-
----
-
-## 5. Distributed Emergency
+## 4. Distributed Emergency
 
 **Files:** `examples/emergency_sensors.pl` + `examples/emergency_responders.pl`
 
@@ -467,10 +520,20 @@ swipl -l src/server.pl -g main -- 8081 examples/emergency_responders.pl --name r
 
 Both nodes connect to `localhost:6379` automatically. No peer registration needed.
 
-**Test:**
+**Test via Web UI:**
+
+Open **http://localhost:8081** (sensors node) and use the **Send Event** panel:
+
+| To | Content | Expected |
+|----|---------|----------|
+| `sensor` | `detect(fire, building_a)` | Alarm crosses to node 2 → full response chain |
+
+Open **http://localhost:8082** (responders node) to see coordinator, evacuator, and responder activity.
+
+**Test via REST API:**
 ```powershell
-# Send emergency to sensor on node 1
-curl.exe -X POST http://localhost:8080/api/send -H "Content-Type: application/json" -d "{""to"":""sensor"",""content"":""detect(fire, building_a)""}"
+# Send emergency to sensor on node 1 (port 8081)
+curl.exe -X POST http://localhost:8081/api/send -H "Content-Type: application/json" -d "{""to"":""sensor"",""content"":""detect(fire, building_a)""}"
 ```
 
 **Expected:** sensor on node 1 sends alarm to coordinator on node 2 via Redis. Coordinator dispatches to evacuator, responder, communicator (all on node 2). Logger messages go back to node 1 via Redis.

@@ -19,6 +19,32 @@ DALI2 is the evolution of the [DALI](https://github.com/AAAI-DISIM-UnivAQ/DALI) 
 
 **Documentation:** [RULES.md](RULES.md) (language reference) · [EXAMPLES.md](EXAMPLES.md) (examples guide)
 
+## Prerequisites
+
+### With Docker (recommended — no other install needed)
+
+- **Docker Desktop** — [https://www.docker.com/products/docker-desktop](https://www.docker.com/products/docker-desktop)
+
+Docker Compose starts Redis automatically. No separate Redis install required.
+
+### Without Docker
+
+- **SWI-Prolog** (≥ 9.0) — [https://www.swi-prolog.org/download/stable](https://www.swi-prolog.org/download/stable)
+- **Redis** (≥ 6.0) — [https://redis.io/downloads](https://redis.io/downloads)
+  - **Windows:** [https://github.com/tporadowski/redis/releases](https://github.com/tporadowski/redis/releases) or via WSL
+  - **macOS:** `brew install redis`
+  - **Linux:** `sudo apt install redis-server` or `sudo dnf install redis`
+
+Redis **must** be running before starting DALI2. By default, DALI2 connects to `localhost:6379`. Override with environment variables `REDIS_HOST` and `REDIS_PORT`.
+
+```sh
+# Start Redis (if installed locally)
+redis-server
+
+# Or run Redis via Docker (even if DALI2 itself runs without Docker)
+docker run -d --name dali2-redis -p 6379:6379 redis:7-alpine
+```
+
 ## Quick Start
 
 ### With Docker (recommended)
@@ -64,10 +90,10 @@ DALI2 uses a **Redis star topology** for all communication. Every agent process 
 One Redis, one server, all agents. Simplest setup.
 
 ```sh
-# Docker (recommended)
+# Docker (recommended) — Redis is started automatically
 docker compose up --build
 
-# Without Docker (requires SWI-Prolog + Redis running on localhost:6379)
+# Without Docker — start Redis first (see Prerequisites), then:
 swipl -l src/server.pl -g main -- 8080 examples/agriculture.pl
 ```
 
@@ -287,7 +313,15 @@ analyzeE(Data) :>
 
 ### Supported models
 
-`openai/gpt-4o-mini` (default), `openai/gpt-4o`, `anthropic/claude-3.5-sonnet`, `google/gemini-2.0-flash`, and [any model on OpenRouter](https://openrouter.ai/models). Change via web UI or `POST /api/ai/model`.
+The web UI model selector shows both **free** and **paid** models. Free models are marked with `(free)`.
+
+**Free models (no credit required):**
+`google/gemini-2.0-flash-exp:free` (default), `meta-llama/llama-3.3-70b-instruct:free`, `qwen/qwen-2.5-72b-instruct:free`, `deepseek/deepseek-chat-v3-0324:free`, and others.
+
+**Paid models:**
+`openai/gpt-4o-mini`, `openai/gpt-4o`, `anthropic/claude-sonnet-4`, `google/gemini-2.5-pro-preview`, and [any model on OpenRouter](https://openrouter.ai/models).
+
+Change via web UI or `POST /api/ai/model`.
 
 ## Web UI
 

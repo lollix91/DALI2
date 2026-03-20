@@ -331,10 +331,12 @@ process_term(~/(Action, PB)) :- !,
 
 process_term(</(Name:Action, PB)) :- !,
     parse_past_list(PB, EL),
-    assert(agent_past_not_done_reaction(Name, Action, EL, true)).
+    transform_body(Action, TA),
+    assert(agent_past_not_done_reaction(Name, TA, EL, true)).
 process_term(</(Action, PB)) :- !,
     parse_past_list(PB, EL),
-    (ctx(Ag) -> assert(agent_past_not_done_reaction(Ag, Action, EL, true)) ; true).
+    transform_body(Action, TA),
+    (ctx(Ag) -> assert(agent_past_not_done_reaction(Ag, TA, EL, true)) ; true).
 
 %% ============================================================
 %% ?/ OPERATOR  (export past done)
@@ -342,10 +344,12 @@ process_term(</(Action, PB)) :- !,
 
 process_term(?/(Name:Action, PB)) :- !,
     parse_past_list(PB, EL),
-    assert(agent_past_done_reaction(Name, Action, EL, true)).
+    transform_body(Action, TA),
+    assert(agent_past_done_reaction(Name, TA, EL, true)).
 process_term(?/(Action, PB)) :- !,
     parse_past_list(PB, EL),
-    (ctx(Ag) -> assert(agent_past_done_reaction(Ag, Action, EL, true)) ; true).
+    transform_body(Action, TA),
+    (ctx(Ag) -> assert(agent_past_done_reaction(Ag, TA, EL, true)) ; true).
 
 %% ============================================================
 %% :~ OPERATOR  (constraints)

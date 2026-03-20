@@ -373,9 +373,8 @@ process_condition_actions_local(Name) :-
          ), _, true))).
 
 process_present_events_local(Name) :-
-    forall(loader:agent_present(Name, Condition, Body),
-        (catch((call_condition_local(Condition) ->
-            catch(execute_body_local(Name, Body), _, true) ; true), _, true))).
+    forall(loader:agent_present(Name, _Label, Body),
+        catch(execute_body_local(Name, Body), _, true)).
 
 process_multi_events_local(Name) :-
     forall(loader:agent_multi_event(Name, EventList, Body),
@@ -535,20 +534,20 @@ try_past_reaction_local(Name, EventList, Body) :-
         catch(execute_body_local(Name, B), _, true)
     ; true).
 
-try_past_done_reaction_local(Name, Action, EventList, Body) :-
-    copy_term(Action-EventList-Body, A-EL-B),
+try_past_done_reaction_local(Name, Action, EventList, _Body) :-
+    copy_term(Action-EventList, A-EL),
     (agent_past_event(did(DidA), _, _), subsumes_term(A, DidA),
      find_all_matching_past_local(EL, Matches) ->
         consume_past_matches_local(Matches),
-        catch(execute_body_local(Name, B), _, true)
+        catch(execute_body_local(Name, A), _, true)
     ; true).
 
-try_past_not_done_reaction_local(Name, Action, EventList, Body) :-
-    copy_term(Action-EventList-Body, A-EL-B),
+try_past_not_done_reaction_local(Name, Action, EventList, _Body) :-
+    copy_term(Action-EventList, A-EL),
     (\+ (agent_past_event(did(DidA), _, _), subsumes_term(A, DidA)),
      find_all_matching_past_local(EL, Matches) ->
         consume_past_matches_local(Matches),
-        catch(execute_body_local(Name, B), _, true)
+        catch(execute_body_local(Name, A), _, true)
     ; true).
 
 find_all_matching_past_local([], []).
