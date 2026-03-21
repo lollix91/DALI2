@@ -19,7 +19,7 @@
 :- dynamic ai_model/1.
 
 %% Default model (OpenRouter format — free tier)
-ai_model('google/gemini-2.0-flash-exp:free').
+ai_model('openrouter/free').
 
 %% ============================================================
 %% CONFIGURATION
@@ -117,8 +117,12 @@ ask_ai_impl(Context, SystemPrompt, PrologFact) :-
         ),
         (   StatusCode =:= 200 ->
             json_read_dict(ResponseStream, ResponseDict),
-            extract_content(ResponseDict, ContentText),
-            parse_prolog_fact(ContentText, PrologFact)
+            (extract_content(ResponseDict, ContentText) ->
+                (parse_prolog_fact(ContentText, PrologFact) -> true
+                ; PrologFact = raw_response(ContentText))
+            ;
+                PrologFact = error(empty_response)
+            )
         ;
             read_string(ResponseStream, _, ErrorBody),
             format(user_error, "[AI Oracle] API returned status ~w: ~w~n", [StatusCode, ErrorBody]),

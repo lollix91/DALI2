@@ -406,13 +406,22 @@ process_term((obt_goal(G) :- Plan)) :- !,
     (ctx(Ag) -> assert(agent_goal(Ag, achieve, G, TP)) ; true).
 process_term(obt_goal(G)) :- !,
     (ctx(Ag) -> assert(agent_goal(Ag, achieve, G, true)) ; true).
+process_term((Name:test_goal(G, ExtraCond) :- Plan)) :- !,
+    transform_body(Plan, TP), assert(agent_goal(Name, test, (G, ExtraCond), TP)).
 process_term((Name:test_goal(G) :- Plan)) :- !,
     transform_body(Plan, TP), assert(agent_goal(Name, test, G, TP)).
+process_term(Name:test_goal(G, ExtraCond)) :- !,
+    assert(agent_goal(Name, test, (G, ExtraCond), true)).
 process_term(Name:test_goal(G)) :- !,
     assert(agent_goal(Name, test, G, true)).
+process_term((test_goal(G, ExtraCond) :- Plan)) :- !,
+    transform_body(Plan, TP),
+    (ctx(Ag) -> assert(agent_goal(Ag, test, (G, ExtraCond), TP)) ; true).
 process_term((test_goal(G) :- Plan)) :- !,
     transform_body(Plan, TP),
     (ctx(Ag) -> assert(agent_goal(Ag, test, G, TP)) ; true).
+process_term(test_goal(G, ExtraCond)) :- !,
+    (ctx(Ag) -> assert(agent_goal(Ag, test, (G, ExtraCond), true)) ; true).
 process_term(test_goal(G)) :- !,
     (ctx(Ag) -> assert(agent_goal(Ag, test, G, true)) ; true).
 

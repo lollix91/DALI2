@@ -117,8 +117,29 @@ get_cycle_ms(Options, Ms) :-
 
 process_messages_local(Name) :-
     redis_comm:redis_poll_messages(Name, Messages),
-    prioritize_messages_local(Name, Messages, Sorted),
+    %% Separate injected events (from 'system') from regular messages
+    separate_injected(Messages, Injected, Regular),
+    %% Injected events bypass told filtering
+    process_injected_from_redis(Name, Injected),
+    %% Regular messages go through told filtering + priority queue
+    prioritize_messages_local(Name, Regular, Sorted),
     process_message_list_local(Name, Sorted).
+
+%% separate_injected(+Messages, -Injected, -Regular)
+separate_injected([], [], []).
+separate_injected([message(system, Content, T)|Rest], [message(system, Content, T)|IRest], Regular) :- !,
+    separate_injected(Rest, IRest, Regular).
+separate_injected([Msg|Rest], Injected, [Msg|RRest]) :-
+    separate_injected(Rest, Injected, RRest).
+
+%% process_injected_from_redis(+Name, +Messages) - Process injected events (bypass told)
+process_injected_from_redis(_, []).
+process_injected_from_redis(Name, [message(_From, Content, T)|Rest]) :-
+    log_local(Name, "Event injected: ~w", [Content]),
+    record_past_local(injected(Content), T),
+    fire_handlers_local(Name, Content),
+    fire_learning_local(Name, Content),
+    process_injected_from_redis(Name, Rest).
 
 prioritize_messages_local(Name, Messages, Sorted) :-
     assign_priorities_local(Name, Messages, Prioritized),
