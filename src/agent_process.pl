@@ -679,6 +679,16 @@ execute_body_local(Name, ask_ai(Context, Result)) :- !,
     ;
         Result = blocked(Context)
     ).
+execute_body_local(Name, ask_ai(Context, SystemPrompt, Result)) :- !,
+    (should_allow_send_local(Name, Context) ->
+        ai_oracle:ask_ai(Context, SystemPrompt, RawResult),
+        (should_allow_receive_local(Name, RawResult, _) ->
+            Result = RawResult
+        ;
+            Result = rejected(RawResult))
+    ;
+        Result = blocked(Context)
+    ).
 execute_body_local(_, ai_available) :- !, ai_oracle:ai_available.
 
 %% Sender / reply
